@@ -1,0 +1,32 @@
+{
+  "plugins": {
+    "pimclaw": {
+      "enabled": true,
+      "path": "/absolute/path/to/pimclaw",
+      "config": {
+        "autoCreateAgents": true,
+        "perfMcp": {
+          "command": "node",
+          "args": ["/absolute/path/to/perf-mcp-server.js"],
+          "env": {
+            "DATABASE_URL": "postgresql://user:password@host:5432/perfdb"
+          }
+        },
+        "monMcp": {
+          "command": "node",
+          "args": ["/absolute/path/to/mon-mcp-server.js"],
+          "env": {
+            "MONITOR_TARGET": "production"
+          }
+        },
+        "simMcp": {
+          "command": "node",
+          "args": ["/absolute/path/to/sim-mcp-server.js"],
+          "env": {
+            "SIM_PROFILE": "default"
+          }
+        }
+      }
+    }
+  }
+}

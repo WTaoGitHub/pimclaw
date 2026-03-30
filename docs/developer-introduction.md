@@ -2,7 +2,7 @@
 
 ## What PimClaw Is
 
-PimClaw, short for Pagoda Inference Model Claw, is a multi-agent orchestration layer for LLM inference operations. It is designed to sit inside OpenClaw as a native plugin while also exposing its capabilities through MCP so the same orchestration model can be reused in other agent frameworks.
+PimClaw, short for Pagoda Inference Model Claw, is a multi-agent orchestration layer for LLM inference operations. It is implemented as a native OpenClaw plugin and also exposes its management surface through MCP so the same operating model can be reused in other agent frameworks.
 
 At a high level, PimClaw does three things:
 
@@ -10,18 +10,18 @@ At a high level, PimClaw does three things:
 2. Routes operator requests to the right agent based on intent.
 3. Connects those agents to external MCP services that provide data or execution capabilities.
 
-PimClaw is intentionally not the system that stores benchmark data, scrapes metrics, or changes Kubernetes state directly. It is the control and reasoning layer that coordinates those responsibilities through MCP-connected services.
+PimClaw is intentionally not the system that stores benchmark data, collects metrics, or modifies Kubernetes state directly. It functions as the control and reasoning layer that coordinates those responsibilities through MCP-connected services.
 
 ## Why The Project Exists
 
-Inference operations usually spread across several concerns:
+Inference operations typically span several concerns:
 
 - historical benchmark lookup
 - runtime monitoring
 - configuration simulation
 - performance analysis and recommendation
 
-Those concerns often live in different systems and require different reasoning patterns. PimClaw separates them into role-based agents so the system can grow without turning into a single overloaded prompt or tool bundle.
+These concerns usually reside in different systems and require different reasoning patterns. PimClaw separates them into role-based agents so the platform can grow without collapsing into a single overloaded prompt or tool bundle.
 
 The initial target use case is performance management for model deployments running on heterogeneous accelerator hardware such as NVIDIA H800, Ascend 910B, and PPU ZW810E.
 
@@ -29,14 +29,14 @@ The initial target use case is performance management for model deployments runn
 
 ### 1. OpenClaw-native, not OpenClaw-only
 
-PimClaw integrates directly with OpenClaw through the plugin SDK, but its core functionality is also exposed as an MCP server. That gives the project two deployment modes:
+PimClaw integrates directly with OpenClaw through the plugin SDK, while its core management surface is also exposed as an MCP server. This gives the project two deployment modes:
 
 - native plugin mode inside OpenClaw
 - portable MCP server mode for any MCP-compatible framework
 
 ### 2. MCP-first boundaries
 
-PimClaw does not assume direct ownership of every dependency. Instead, it treats external services as MCP endpoints. This keeps integration boundaries explicit and makes the orchestration layer easier to port.
+PimClaw does not assume direct ownership of every dependency. Instead, it treats external services as MCP endpoints. This keeps integration boundaries explicit, reduces coupling, and makes the orchestration layer easier to port.
 
 ### 3. Role-specific agents
 
@@ -53,7 +53,20 @@ The project is designed for operators interacting through conversation. Natural 
 
 ## System Architecture
 
-PimClaw has four main layers.
+PimClaw is organized into four primary layers.
+
+### Architecture Diagram
+
+```mermaid
+flowchart TD
+		operator[Human Operator] --> openclaw[OpenClaw]
+		openclaw --> entry[PimClaw Plugin Entry\nsrc/index.ts]
+		entry --> master[Master Control Layer\nOrchestrator\nRouter\nSupervisor]
+		master --> registry[Sub-Agent Registry\nperf\nanalyst\nmon\nsim]
+		registry --> services[External MCP Services\nperformance data\nmonitoring\nsimulation]
+```
+
+The important operational boundary is between the PimClaw control plane and the external MCP services. PimClaw owns coordination, routing, and supervision. The external services own data access and domain-specific execution.
 
 ### Plugin Layer
 
@@ -96,7 +109,7 @@ Support code is organized into:
 
 ## Runtime Model
 
-When PimClaw starts inside OpenClaw, the typical flow is:
+When PimClaw starts inside OpenClaw, the standard flow is:
 
 1. OpenClaw loads the PimClaw plugin entry.
 2. PimClaw parses plugin configuration.
@@ -106,7 +119,7 @@ When PimClaw starts inside OpenClaw, the typical flow is:
 6. PimClaw routes the request to the best sub-agent or service tool path.
 7. The result is returned back through OpenClaw.
 
-In standalone mode, PimClaw skips the OpenClaw plugin lifecycle and exposes its management tools directly through its own MCP server.
+In standalone mode, PimClaw bypasses the OpenClaw plugin lifecycle and exposes its management tools directly through its own MCP server.
 
 ## What PimClaw Owns And What It Does Not
 
@@ -128,7 +141,7 @@ PimClaw does not own:
 - simulator implementation details
 - model-serving engine logic
 
-Those responsibilities are delegated to external systems accessed through MCP.
+These responsibilities are delegated to external systems accessed through MCP.
 
 ## Current Tool Surface
 
@@ -143,7 +156,7 @@ PimClaw registers the following management tools:
 - `pimclaw_list_agent_tools`
 - `pimclaw_health`
 
-These tools are the primary interface for both OpenClaw integration and standalone MCP portability.
+These tools form the primary management surface for both OpenClaw integration and standalone MCP portability.
 
 ## Repository Map
 
@@ -163,7 +176,7 @@ For day-to-day development, these are the most important files:
 
 ## Development Workflow
 
-The current local workflow is straightforward.
+The local development workflow is intentionally simple.
 
 ### Install
 
@@ -197,7 +210,7 @@ npx tsx src/mcp/server.ts
 
 ## How To Approach Changes
 
-When adding or changing behavior, use these guidelines.
+When adding or changing behavior, use the following guidelines.
 
 ### If you are changing routing behavior
 
@@ -231,7 +244,7 @@ The project currently has focused unit coverage around the main control surfaces
 - supervisor reporting
 - MCP tool exposure
 
-If you change behavior in those areas, update or extend the corresponding tests first. This codebase is small enough that regressions usually show up quickly when the control flow or tool contracts shift.
+If you change behavior in those areas, update or extend the corresponding tests first. The codebase is still compact enough that regressions usually appear quickly when control flow or tool contracts shift.
 
 ## Known Constraints
 
@@ -241,7 +254,7 @@ If you change behavior in those areas, update or extend the corresponding tests 
 
 ## Recommended Reading Order
 
-For a new developer joining the project, this reading order is usually the fastest:
+For a developer joining the project, this reading order is usually the fastest:
 
 1. `docs/developer-introduction.md`
 2. `docs/requirements.md`
@@ -251,7 +264,7 @@ For a new developer joining the project, this reading order is usually the faste
 6. `src/master/router.ts`
 7. `src/mcp/server.ts`
 
-That sequence gives you the conceptual model first, then the operating model, then the code path that matters most.
+That sequence provides the conceptual model first, then the operating model, then the code path that matters most.
 
 ## Near-Term Development Priorities
 
@@ -265,4 +278,4 @@ The most natural next areas of growth are:
 
 ## Summary
 
-PimClaw is best understood as a control plane for inference-operations intelligence. It is not a monolithic agent and not a direct executor of all platform operations. Its value comes from coordinating specialized agents, keeping tool boundaries explicit through MCP, and fitting naturally into OpenClaw while remaining portable beyond it.
+PimClaw is best understood as a control plane for inference-operations intelligence. It is neither a monolithic agent nor a direct executor of every platform operation. Its value comes from coordinating specialized agents, keeping tool boundaries explicit through MCP, and fitting naturally into OpenClaw while remaining portable beyond it.

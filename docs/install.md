@@ -47,6 +47,8 @@ npm run build   # Emits dist/
 
 ## 4. Register PimClaw as an OpenClaw extension
 
+For a ready-to-edit starting point, use [pimclaw.config.example.yaml](../pimclaw.config.example.yaml) or [pimclaw.config.example.json](../pimclaw.config.example.json).
+
 Add PimClaw to OpenClaw's configuration. In your OpenClaw config file (typically `~/.config/openclaw/config.yaml` or the equivalent), add:
 
 ```yaml
