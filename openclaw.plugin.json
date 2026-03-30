@@ -1,0 +1,97 @@
+{
+  "id": "pimclaw",
+  "uiHints": {
+    "perfMcp.command": {
+      "label": "Perf MCP Command",
+      "placeholder": "node",
+      "help": "Command to start the perf MCP server"
+    },
+    "perfMcp.args": {
+      "label": "Perf MCP Args",
+      "placeholder": "path/to/perf-mcp-server.js",
+      "help": "Arguments for the perf MCP server command"
+    },
+    "monMcp.command": {
+      "label": "Mon MCP Command",
+      "placeholder": "node",
+      "help": "Command to start the monitor MCP server (optional)",
+      "advanced": true
+    },
+    "monMcp.args": {
+      "label": "Mon MCP Args",
+      "placeholder": "path/to/mon-mcp-server.js",
+      "advanced": true
+    },
+    "simMcp.command": {
+      "label": "Sim MCP Command",
+      "placeholder": "node",
+      "help": "Command to start the simulator MCP server (optional)",
+      "advanced": true
+    },
+    "simMcp.args": {
+      "label": "Sim MCP Args",
+      "placeholder": "path/to/sim-mcp-server.js",
+      "advanced": true
+    },
+    "autoCreateAgents": {
+      "label": "Auto-Create Agents",
+      "help": "Automatically create default agents (perf, analyst) on startup"
+    }
+  },
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "perfMcp": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "command": { "type": "string" },
+          "args": {
+            "type": "array",
+            "items": { "type": "string" }
+          },
+          "env": {
+            "type": "object",
+            "additionalProperties": { "type": "string" }
+          }
+        },
+        "required": ["command", "args"]
+      },
+      "monMcp": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "command": { "type": "string" },
+          "args": {
+            "type": "array",
+            "items": { "type": "string" }
+          },
+          "env": {
+            "type": "object",
+            "additionalProperties": { "type": "string" }
+          }
+        }
+      },
+      "simMcp": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "command": { "type": "string" },
+          "args": {
+            "type": "array",
+            "items": { "type": "string" }
+          },
+          "env": {
+            "type": "object",
+            "additionalProperties": { "type": "string" }
+          }
+        }
+      },
+      "autoCreateAgents": {
+        "type": "boolean",
+        "default": true
+      }
+    }
+  }
+}
