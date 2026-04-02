@@ -1,97 +1,21 @@
 {
   "id": "pimclaw",
-  "uiHints": {
-    "perfMcp.command": {
-      "label": "Perf MCP Command",
-      "placeholder": "node",
-      "help": "Command to start the external perf MCP service process"
-    },
-    "perfMcp.args": {
-      "label": "Perf MCP Args",
-      "placeholder": "path/to/perf-mcp-server.js",
-      "help": "Arguments for the external perf MCP service process"
-    },
-    "monMcp.command": {
-      "label": "Mon MCP Command",
-      "placeholder": "node",
-      "help": "Command to start the external monitor MCP service process (optional)",
-      "advanced": true
-    },
-    "monMcp.args": {
-      "label": "Mon MCP Args",
-      "placeholder": "path/to/mon-mcp-server.js",
-      "advanced": true
-    },
-    "simMcp.command": {
-      "label": "Sim MCP Command",
-      "placeholder": "node",
-      "help": "Command to start the external simulator MCP service process (optional)",
-      "advanced": true
-    },
-    "simMcp.args": {
-      "label": "Sim MCP Args",
-      "placeholder": "path/to/sim-mcp-server.js",
-      "advanced": true
-    },
-    "autoCreateAgents": {
-      "label": "Auto-Create Agents",
-      "help": "Automatically create default agents (perf, analyst) on startup"
-    }
-  },
+  "enabledByDefault": false,
   "configSchema": {
     "type": "object",
     "additionalProperties": false,
-    "properties": {
-      "perfMcp": {
-        "type": "object",
-        "additionalProperties": false,
-        "properties": {
-          "command": { "type": "string" },
-          "args": {
-            "type": "array",
-            "items": { "type": "string" }
-          },
-          "env": {
-            "type": "object",
-            "additionalProperties": { "type": "string" }
-          }
-        },
-        "required": ["command", "args"]
-      },
-      "monMcp": {
-        "type": "object",
-        "additionalProperties": false,
-        "properties": {
-          "command": { "type": "string" },
-          "args": {
-            "type": "array",
-            "items": { "type": "string" }
-          },
-          "env": {
-            "type": "object",
-            "additionalProperties": { "type": "string" }
-          }
-        }
-      },
-      "simMcp": {
-        "type": "object",
-        "additionalProperties": false,
-        "properties": {
-          "command": { "type": "string" },
-          "args": {
-            "type": "array",
-            "items": { "type": "string" }
-          },
-          "env": {
-            "type": "object",
-            "additionalProperties": { "type": "string" }
-          }
-        }
-      },
-      "autoCreateAgents": {
-        "type": "boolean",
-        "default": true
-      }
-    }
+    "properties": {}
+  },
+  "contracts": {
+    "tools": [
+      "pimclaw_route_task",
+      "pimclaw_list_agents",
+      "pimclaw_agent_status",
+      "pimclaw_health",
+      "pimclaw_task_counts",
+      "pimclaw_list_tasks",
+      "pimclaw_retry_task",
+      "pimclaw_revoke_task"
+    ]
   }
 }

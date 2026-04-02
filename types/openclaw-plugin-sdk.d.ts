@@ -1,5 +1,5 @@
 /**
- * Ambient type declarations for openclaw/plugin-sdk/plugin-entry.
+ * Ambient type declarations for openclaw/plugin-sdk.
  *
  * These mirror the subset of OpenClaw's plugin SDK that PimClaw uses.
  * When OpenClaw is available as a built package (dist/ exists), TypeScript
@@ -29,11 +29,19 @@ declare module "openclaw/plugin-sdk/plugin-entry" {
   /** Factory function that produces tools given a context. */
   export type OpenClawPluginToolFactory = (ctx: unknown) => AnyAgentTool | AnyAgentTool[] | null | undefined;
 
+  /** Context passed to service start/stop. */
+  export interface OpenClawPluginServiceContext {
+    config: Record<string, unknown>;
+    stateDir: string;
+    workspaceDir: string;
+    logger: PluginLogger;
+  }
+
   /** Service lifecycle registered via registerService. */
   export interface OpenClawPluginService {
     id: string;
-    start: (ctx: unknown) => void | Promise<void>;
-    stop?: (ctx: unknown) => void | Promise<void>;
+    start: (ctx: OpenClawPluginServiceContext) => void | Promise<void>;
+    stop?: (ctx: OpenClawPluginServiceContext) => void | Promise<void>;
   }
 
   /** Plugin config schema shape (optional). */

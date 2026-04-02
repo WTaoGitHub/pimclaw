@@ -1,42 +1,68 @@
 {
-  "name": "@pimclaw/pimclaw",
-  "version": "0.1.0",
-  "description": "Pagoda Inference Model Claw — Multi-agent system for LLM inference model performance management",
+  "name": "pimclaw",
+  "version": "1.0.0",
+  "description": "LLM Deployment Orchestration System with Multi-Agent Coordination",
   "type": "module",
   "main": "dist/index.js",
-  "scripts": {
-    "build": "tsc",
-    "dev": "tsx src/index.ts",
-    "test": "vitest run",
-    "test:watch": "vitest",
-    "lint": "tsc --noEmit",
-    "mcp:serve": "tsx src/mcp/server.ts"
-  },
-  "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.12.1",
-    "@sinclair/typebox": "^0.34.49"
-  },
-  "devDependencies": {
-    "@types/node": "^22.15.0",
-    "openclaw": "file:/Users/bati/github_projects/openclaw",
-    "tsx": "^4.19.0",
-    "typescript": "^5.8.0",
-    "vitest": "^3.1.0"
-  },
-  "peerDependencies": {
-    "openclaw": ">=2026.3.30"
-  },
-  "peerDependenciesMeta": {
-    "openclaw": {
-      "optional": true
+  "files": [
+    "dist",
+    "openclaw.plugin.json"
+  ],
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    },
+    "./plugin": {
+      "import": "./dist/openclaw-plugin.js",
+      "types": "./dist/openclaw-plugin.d.ts"
     }
   },
-  "openclaw": {
-    "extensions": [
-      "./src/index.ts"
-    ]
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "start": "node dist/index.js",
+    "test": "vitest",
+    "test:ui": "vitest --ui",
+    "test:coverage": "vitest --coverage",
+    "lint": "eslint src",
+    "cli": "node dist/master/cli.js"
+  },
+  "keywords": [
+    "llm",
+    "orchestration",
+    "deployment",
+    "multi-agent",
+    "mcp"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^0.7.0",
+    "commander": "^11.1.0",
+    "uuid": "^9.0.1",
+    "yaml": "^2.3.4"
+  },
+  "devDependencies": {
+    "@types/node": "^20.10.6",
+    "@types/uuid": "^9.0.7",
+    "@typescript-eslint/eslint-plugin": "^6.17.0",
+    "@typescript-eslint/parser": "^6.17.0",
+    "@vitest/ui": "^1.1.1",
+    "@vitest/coverage-v8": "^1.1.1",
+    "eslint": "^8.56.0",
+    "typescript": "^5.3.3",
+    "vitest": "^1.1.1"
   },
   "engines": {
     "node": ">=22.16.0"
+  },
+  "openclaw": {
+    "extensions": [
+      "./src/openclaw-plugin.ts"
+    ],
+    "compat": {
+      "pluginApi": ">=2026.1.0"
+    }
   }
 }
