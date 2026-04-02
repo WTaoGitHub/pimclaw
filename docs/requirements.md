@@ -342,7 +342,7 @@ plugins:
       command: "node"
       args: ["path/to/perf-mcp-server.js"]
       env:
-        DATABASE_URL: "postgresql://..."
+        PERF_SERVICE_PROFILE: "production"
     monMcp:                      # optional, future
       command: "node"
       args: ["path/to/mon-mcp-server.js"]

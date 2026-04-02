@@ -9,15 +9,15 @@ plugins:
         args:
           - /absolute/path/to/perf-mcp-server.js
         env:
-          DATABASE_URL: postgresql://user:password@host:5432/perfdb
-      # Optional runtime monitor MCP service
+          PERF_SERVICE_PROFILE: production
+      # Optional external runtime monitor MCP service process
       # monMcp:
       #   command: node
       #   args:
       #     - /absolute/path/to/mon-mcp-server.js
       #   env:
       #     MONITOR_TARGET: production
-      # Optional simulator MCP service
+      # Optional external simulator MCP service process
       # simMcp:
       #   command: node
       #   args:

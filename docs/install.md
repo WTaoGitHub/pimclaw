@@ -4,7 +4,7 @@
 
 - Node.js ≥ 22.16
 - An existing [OpenClaw](https://github.com/nicepkg/openclaw) instance (source checkout)
-- One or more MCP services for PimClaw sub-agents to consume (e.g. `perf` MCP server)
+- One or more external MCP services for PimClaw sub-agents to consume (e.g. a `perf` MCP service process)
 
 ---
 
@@ -62,7 +62,7 @@ plugins:
         command: "node"
         args: ["path/to/perf-mcp-server.js"]
         env:
-          DATABASE_URL: "postgresql://user:pass@host:5432/perfdb"
+          PERF_SERVICE_PROFILE: "production"
       # monMcp:               # optional — runtime monitor
       #   command: "node"
       #   args: ["path/to/mon-mcp-server.js"]
@@ -133,15 +133,15 @@ This exposes the same 7 tools over MCP stdio transport. Configure your MCP clien
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `autoCreateAgents` | `boolean` | `true` | Auto-create default agents (perf, analyst) on startup |
-| `perfMcp.command` | `string` | — | Command to start the perf MCP server |
-| `perfMcp.args` | `string[]` | — | Arguments for the perf MCP command |
-| `perfMcp.env` | `Record<string,string>` | — | Environment variables for the perf MCP process |
-| `monMcp.command` | `string` | — | Command for the runtime monitor MCP server |
-| `monMcp.args` | `string[]` | — | Arguments for the mon MCP command |
-| `monMcp.env` | `Record<string,string>` | — | Environment variables for the mon MCP process |
-| `simMcp.command` | `string` | — | Command for the simulator MCP server |
-| `simMcp.args` | `string[]` | — | Arguments for the sim MCP command |
-| `simMcp.env` | `Record<string,string>` | — | Environment variables for the sim MCP process |
+| `perfMcp.command` | `string` | — | Command to start the external perf MCP service process |
+| `perfMcp.args` | `string[]` | — | Arguments for the perf MCP service process |
+| `perfMcp.env` | `Record<string,string>` | — | Environment variables for the perf MCP service process |
+| `monMcp.command` | `string` | — | Command to start the external runtime monitor MCP service process |
+| `monMcp.args` | `string[]` | — | Arguments for the mon MCP service process |
+| `monMcp.env` | `Record<string,string>` | — | Environment variables for the mon MCP service process |
+| `simMcp.command` | `string` | — | Command to start the external simulator MCP service process |
+| `simMcp.args` | `string[]` | — | Arguments for the sim MCP service process |
+| `simMcp.env` | `Record<string,string>` | — | Environment variables for the sim MCP service process |
 
 ---
 

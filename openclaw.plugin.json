@@ -4,17 +4,17 @@
     "perfMcp.command": {
       "label": "Perf MCP Command",
       "placeholder": "node",
-      "help": "Command to start the perf MCP server"
+      "help": "Command to start the external perf MCP service process"
     },
     "perfMcp.args": {
       "label": "Perf MCP Args",
       "placeholder": "path/to/perf-mcp-server.js",
-      "help": "Arguments for the perf MCP server command"
+      "help": "Arguments for the external perf MCP service process"
     },
     "monMcp.command": {
       "label": "Mon MCP Command",
       "placeholder": "node",
-      "help": "Command to start the monitor MCP server (optional)",
+      "help": "Command to start the external monitor MCP service process (optional)",
       "advanced": true
     },
     "monMcp.args": {
@@ -25,7 +25,7 @@
     "simMcp.command": {
       "label": "Sim MCP Command",
       "placeholder": "node",
-      "help": "Command to start the simulator MCP server (optional)",
+      "help": "Command to start the external simulator MCP service process (optional)",
       "advanced": true
     },
     "simMcp.args": {

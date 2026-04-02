@@ -1,0 +1,18 @@
+flowchart TD
+    subgraph OpenClaw Plugin - PIMClaw
+        Head[Head Agent]
+        Recorder[Task Status Recorder]
+        Scheduler[Scheduler Agent]
+        Worker[Worker Agents]
+    end
+
+    Grafana[Grafana MCP Service]
+
+    Grafana -->|Provides Metrics| Head
+    Head -->|Create Planned Tasks| Recorder
+
+    Scheduler -->|Fetch Ready Tasks| Recorder
+    Scheduler -->|Update Task Status| Recorder
+    Scheduler -->|Spawn Workers| Worker
+
+    Worker -->|Report Status Updates| Recorder

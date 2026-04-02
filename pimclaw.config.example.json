@@ -9,7 +9,7 @@
           "command": "node",
           "args": ["/absolute/path/to/perf-mcp-server.js"],
           "env": {
-            "DATABASE_URL": "postgresql://user:password@host:5432/perfdb"
+            "PERF_SERVICE_PROFILE": "production"
           }
         },
         "monMcp": {
