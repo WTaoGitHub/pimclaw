@@ -139,6 +139,40 @@ Priority: **P4** — Scheduler→Worker parent-child tracking and abort propagat
 
 ---
 
+## 5. Deployment & Agent Registration
+
+Priority: **P0** — required for PimClaw to run in OpenClaw.
+
+### Plugin deployment (Docker)
+
+- [x] Build project locally (`npm run build`)
+- [x] Copy `dist/`, `src/`, `package.json`, `openclaw.plugin.json` into container `/tmp/pimclaw/`
+- [x] Install production deps in container (`npm install --production`)
+- [x] Fix file ownership to `node:node` (uid 1000) — OpenClaw blocks plugins with suspicious ownership
+- [x] Add root `index.ts` entry point for OpenClaw plugin discovery
+- [x] Add `"openclaw": { "extensions": ["./index.ts"] }` to `package.json`
+- [x] Link and enable plugin (`openclaw plugins install --link` + `openclaw plugins enable`)
+- [x] Verify plugin loads: `openclaw plugins list` shows `PimClaw | loaded`
+
+### Agent registration
+
+- [x] Register `pimclaw-head` agent (`openclaw agents add`)
+- [x] Register `pimclaw-planner` agent (`openclaw agents add`)
+- [x] Write Head agent system prompt (`CLAUDE.md` in agent dir)
+- [x] Write Planner agent system prompt (`CLAUDE.md` in agent dir)
+- [x] Configure Head agent tool access (`pimclaw_submit_anomalies`, `pimclaw_task_counts`, `pimclaw_health`)
+- [x] Configure Planner agent tool access (`pimclaw_plan_task`, `pimclaw_health`, `pimclaw_task_counts`)
+- [x] Create cron job for Head agent (`*/5 * * * *`, session key `pimclaw-head-session`, isolated session)
+
+### Remaining operational setup
+
+- [ ] Connect Grafana MCP server — Head agent needs metrics data source to collect TTFT, TPOT, QPS, throughput, GPU utilization, error rate
+- [ ] Connect Perf MCP server — Planner agent needs historical performance data for candidate config selection
+- [ ] Connect Simulator MCP server — Planner agent needs simulation capability to validate configs before committing
+- [ ] Test end-to-end: Head cron fires → detects anomaly → `pimclaw_submit_anomalies` → AnomalyReceiver validates → PlannerTrigger spawns Planner → Planner queries MCP → `pimclaw_plan_task` → Scheduler dispatches Worker
+
+---
+
 ## Dependencies between skills
 
 ```
