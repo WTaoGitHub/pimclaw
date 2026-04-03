@@ -140,10 +140,11 @@ describe('TaskStatusRecorder', () => {
     };
 
     await recorder.createTask(task);
-    await recorder.updateTaskResult(task.taskId, {
-      status: 'done',
-      result: { newScale: 4, executedAt: new Date() },
-    });
+    await recorder.updateTaskResult(
+      task.taskId,
+      { newScale: 4, executedAt: new Date() },
+      null,
+    );
 
     const updated = recorder.getTask(task.taskId);
     expect(updated?.status).toBe('done');
@@ -172,8 +173,9 @@ describe('TaskStatusRecorder', () => {
     const content = await fs.readFile(tasksFile, 'utf-8');
     const parsed = JSON.parse(content);
 
-    expect(Array.isArray(parsed)).toBe(true);
-    expect(parsed.some((t: any) => t.taskId === task.taskId)).toBe(true);
+    expect(Array.isArray(parsed)).toBe(false);
+    expect(parsed[task.taskId]).toBeDefined();
+    expect(parsed[task.taskId].taskId).toBe(task.taskId);
   });
 
   it('should get task counts', async () => {

@@ -4,7 +4,7 @@
  */
 
 import { BaseAgent } from './base-agent.js';
-import { AgentRegistry } from './agent-registry.js';
+import { ComponentRegistry } from './component-registry.js';
 import { TaskStatusRecorder } from './task-status-recorder.js';
 import { Task } from '../types/index.js';
 
@@ -23,7 +23,7 @@ export class SchedulerAgent extends BaseAgent {
   private isRunning: boolean = false;
 
   constructor(
-    registry: AgentRegistry,
+    registry: ComponentRegistry,
     taskRecorder: TaskStatusRecorder,
     maxWorkers?: number
   ) {

@@ -1,7 +1,7 @@
 /**
- * PimClaw MCP Server
- * Exposes all PimClaw tools via the Model Context Protocol
- * Enables other frameworks to use PimClaw as an MCP service
+ * PimClaw MCP Server — v2
+ * Exposes PimClaw tools via the Model Context Protocol.
+ * Updated for v2 hybrid architecture: renamed tools, new tool definitions.
  */
 
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
@@ -13,41 +13,33 @@ import {
   ErrorCode,
 } from '@modelcontextprotocol/sdk/types.js';
 import type { TextContent, Tool } from '@modelcontextprotocol/sdk/types.js';
-import { AgentRegistry } from './agent-registry.js';
+import { ComponentRegistry } from './component-registry.js';
 import { TaskStatusRecorder } from './task-status-recorder.js';
 import { Task } from '../types/index.js';
 import { v4 as uuidv4 } from 'uuid';
 
-/**
- * PimClaw MCP Server
- */
 export class PimClawMCPServer {
   private server: Server;
-  private registry: AgentRegistry;
+  private registry: ComponentRegistry;
   private taskRecorder: TaskStatusRecorder;
 
-  constructor(registry: AgentRegistry, taskRecorder: TaskStatusRecorder) {
+  constructor(registry: ComponentRegistry, taskRecorder: TaskStatusRecorder) {
     this.registry = registry;
     this.taskRecorder = taskRecorder;
 
     this.server = new Server(
-      { name: 'pimclaw-server', version: '1.0.0' },
+      { name: 'pimclaw-server', version: '2.0.0' },
       { capabilities: { tools: {} } },
     );
 
     this.setupHandlers();
   }
 
-  /**
-   * Setup request handlers
-   */
   private setupHandlers(): void {
-    // List available tools
     this.server.setRequestHandler(ListToolsRequestSchema, () => ({
       tools: this.getToolDefinitions(),
     }));
 
-    // Handle tool calls
     this.server.setRequestHandler(
       CallToolRequestSchema,
       async (request) => {
@@ -56,50 +48,44 @@ export class PimClawMCPServer {
     );
   }
 
-  /**
-   * Get all available tool definitions
-   */
   private getToolDefinitions(): Tool[] {
     return [
-      // Agent management tools
       {
-        name: 'pimclaw_list_agents',
-        description: 'List all active agents and their status',
+        name: 'pimclaw_list_components',
+        description: 'List all active PimClaw components and their status',
         inputSchema: {
           type: 'object' as const,
           properties: {
-            agentType: {
+            componentType: {
               type: 'string',
               description:
-                'Filter by agent type (head, scheduler, recorder, worker)',
+                'Filter by component type (scheduler, recorder, worker)',
             },
           },
         },
       },
       {
-        name: 'pimclaw_agent_status',
-        description: 'Get detailed status of a specific agent',
+        name: 'pimclaw_component_status',
+        description: 'Get detailed status of a specific PimClaw component',
         inputSchema: {
           type: 'object' as const,
           properties: {
-            agentId: {
+            componentId: {
               type: 'string',
-              description: 'The ID of the agent',
+              description: 'The ID of the component',
             },
           },
-          required: ['agentId'],
+          required: ['componentId'],
         },
       },
       {
-        name: 'pimclaw_health_report',
-        description: 'Get overall health report for all agents',
+        name: 'pimclaw_health',
+        description: 'Get overall health report for all components',
         inputSchema: {
           type: 'object' as const,
           properties: {},
         },
       },
-
-      // Task management tools
       {
         name: 'pimclaw_list_tasks',
         description: 'List tasks by status',
@@ -109,7 +95,7 @@ export class PimClawMCPServer {
             status: {
               type: 'string',
               description:
-                'Filter by status (ready, scheduling, scheduled, running, done, failed, expired)',
+                'Filter by status (planning, ready, scheduling, scheduled, running, done, failed, expired)',
             },
             limit: {
               type: 'number',
@@ -186,8 +172,6 @@ export class PimClawMCPServer {
           required: ['taskId'],
         },
       },
-
-      // Task counting tool
       {
         name: 'pimclaw_task_counts',
         description: 'Get counts of tasks by status',
@@ -199,9 +183,6 @@ export class PimClawMCPServer {
     ];
   }
 
-  /**
-   * Handle tool calls
-   */
   private async handleToolCall(request: any): Promise<{
     content: TextContent[];
   }> {
@@ -211,18 +192,15 @@ export class PimClawMCPServer {
       let result: unknown;
 
       switch (name) {
-        // Agent tools
-        case 'pimclaw_list_agents':
-          result = this.listAgents(args);
+        case 'pimclaw_list_components':
+          result = this.listComponents(args);
           break;
-        case 'pimclaw_agent_status':
-          result = this.agentStatus(args);
+        case 'pimclaw_component_status':
+          result = this.componentStatus(args);
           break;
-        case 'pimclaw_health_report':
+        case 'pimclaw_health':
           result = this.healthReport();
           break;
-
-        // Task tools
         case 'pimclaw_list_tasks':
           result = await this.listTasks(args);
           break;
@@ -241,7 +219,6 @@ export class PimClawMCPServer {
         case 'pimclaw_task_counts':
           result = this.taskCounts();
           break;
-
         default:
           throw new McpError(
             ErrorCode.MethodNotFound,
@@ -263,34 +240,22 @@ export class PimClawMCPServer {
     }
   }
 
-  /**
-   * List all agents
-   */
-  private listAgents(args: any): unknown {
-    const allAgents = this.registry.getAllAgentsStatus();
-    if (args.agentType) {
-      return allAgents.filter((a) => a.agentType === args.agentType);
+  private listComponents(args: any): unknown {
+    const allComponents = this.registry.getAllAgentsStatus();
+    if (args.componentType) {
+      return allComponents.filter((a) => a.agentType === args.componentType);
     }
-    return allAgents;
+    return allComponents;
   }
 
-  /**
-   * Get agent status
-   */
-  private agentStatus(args: any): unknown {
-    return this.registry.getAgentStatus(args.agentId);
+  private componentStatus(args: any): unknown {
+    return this.registry.getAgentStatus(args.componentId);
   }
 
-  /**
-   * Get health report
-   */
   private healthReport(): unknown {
     return this.registry.getHealthReport();
   }
 
-  /**
-   * List tasks
-   */
   private async listTasks(args: any): Promise<unknown> {
     const limit = args.limit || 10;
     if (args.status) {
@@ -301,16 +266,10 @@ export class PimClawMCPServer {
     return this.taskRecorder.getAllTasks().slice(0, limit);
   }
 
-  /**
-   * Get task details
-   */
   private async taskDetails(args: any): Promise<unknown> {
     return this.taskRecorder.getTask(args.taskId);
   }
 
-  /**
-   * Inject a new task
-   */
   private async injectTask(args: any): Promise<unknown> {
     const task: Task = {
       taskId: uuidv4(),
@@ -328,32 +287,20 @@ export class PimClawMCPServer {
     return { success: true, taskId: task.taskId };
   }
 
-  /**
-   * Retry a failed task
-   */
   private async retryTask(args: any): Promise<unknown> {
     await this.taskRecorder.resetTaskForRetry(args.taskId);
     return { success: true, taskId: args.taskId };
   }
 
-  /**
-   * Revoke a task
-   */
   private async revokeTask(args: any): Promise<unknown> {
     await this.taskRecorder.updateTaskStatus(args.taskId, 'expired');
     return { success: true, taskId: args.taskId };
   }
 
-  /**
-   * Get task counts
-   */
   private taskCounts(): unknown {
     return this.taskRecorder.getTaskCounts();
   }
 
-  /**
-   * Start the MCP server
-   */
   async start(): Promise<void> {
     const transport = new StdioServerTransport();
     await this.server.connect(transport);

@@ -1,14 +1,16 @@
 /**
- * PimClaw OpenClaw Plugin
+ * PimClaw OpenClaw Plugin — v2 Minimal Hybrid Architecture
  *
  * Integrates with OpenClaw via:
  *   - definePluginEntry()   — plugin registration
  *   - api.registerService() — lifecycle-managed background service that
- *     boots the Head Agent, TaskStatusRecorder, and Scheduler Agent
+ *     boots the PimClaw Components (TaskStatusRecorder, Scheduler, AnomalyReceiver)
  *   - api.registerTool()    — exposes PimClaw tools to OpenClaw agents
  *
- * Install the plugin, and the three core agents start automatically
- * inside the OpenClaw process.
+ * The LLM Head and Planner agents run externally via OpenClaw's agent runtime,
+ * not inside this plugin. They interact through two integration gates:
+ *   - pimclaw_submit_anomalies (Head → Plugin)
+ *   - pimclaw_plan_task (Planner → Plugin)
  */
 
 import { definePluginEntry } from 'openclaw/plugin-sdk/plugin-entry';
@@ -18,77 +20,81 @@ import type {
   OpenClawPluginServiceContext,
 } from 'openclaw/plugin-sdk/plugin-entry';
 
-import { AgentRegistry } from './master/agent-registry.js';
+import { ComponentRegistry } from './master/component-registry.js';
 import { TaskStatusRecorder } from './master/task-status-recorder.js';
 import { SchedulerAgent } from './master/scheduler-agent.js';
-import { HeadAgent } from './master/head-agent.js';
+import { AnomalyReceiver } from './master/anomaly-receiver.js';
+import type { AnomalyEvent } from './master/anomaly-receiver.js';
+import { PlannerTrigger } from './master/planner-trigger.js';
 import type { Task } from './types/index.js';
 import { v4 as uuidv4 } from 'uuid';
 
 // ─── Shared state across the plugin (lives for the OpenClaw process) ───────
 
-let registry: AgentRegistry | null = null;
+let registry: ComponentRegistry | null = null;
 let taskRecorder: TaskStatusRecorder | null = null;
 let scheduler: SchedulerAgent | null = null;
-let head: HeadAgent | null = null;
+let anomalyReceiver: AnomalyReceiver | null = null;
 
-// ─── Service: lifecycle-managed background agents ──────────────────────────
+// ─── Service: lifecycle-managed PimClaw components ─────────────────────────
 
 function createPimClawService(): OpenClawPluginService {
   return {
-    id: 'pimclaw-agents',
+    id: 'pimclaw-components',
 
     async start(ctx: OpenClawPluginServiceContext) {
-      ctx.logger.info('[PimClaw] Starting agents…');
+      ctx.logger.info('[PimClaw] Starting components…');
 
       // 1. Shared infrastructure
-      registry = new AgentRegistry();
+      registry = new ComponentRegistry();
       taskRecorder = new TaskStatusRecorder(
-        // Use OpenClaw's stateDir for persistence so data survives restarts
         `${ctx.stateDir}/pimclaw-tasks`,
       );
       await taskRecorder.initialize();
 
-      // 2. Scheduler Agent
+      // 2. PlannerTrigger — spawns Planner agent via OpenClaw API
+      const plannerConfig = (ctx.config as any)?.planner ?? {};
+      const openclawApi = (ctx as any).openclawApi ?? {
+        triggerAgent: async () => {
+          ctx.logger.warn('[PimClaw] OpenClaw agent API not available — Planner trigger is a no-op');
+        },
+      };
+      const plannerTrigger = new PlannerTrigger(openclawApi, {
+        agentId: plannerConfig.agentId ?? 'pimclaw-planner',
+        timeoutSeconds: plannerConfig.timeoutSeconds ?? 600,
+      });
+
+      // 3. AnomalyReceiver — validates events from LLM Head, triggers Planner
+      const receiverConfig = (ctx.config as any)?.anomalyReceiver ?? {};
+      anomalyReceiver = new AnomalyReceiver(taskRecorder, plannerTrigger, receiverConfig);
+
+      // 4. Scheduler — polls for ready tasks, spawns Workers
       scheduler = new SchedulerAgent(registry, taskRecorder);
       await scheduler.initialize();
       scheduler.run().catch((err) =>
         ctx.logger.error(`[PimClaw] Scheduler error: ${err}`),
       );
 
-      // 3. Head Agent (Observe-Think-Decide)
-      head = new HeadAgent(registry, taskRecorder);
-      // Override Head's snapshot storage to OpenClaw's stateDir
-      (head as any).storagePath = `${ctx.stateDir}/pimclaw-head-data`;
-      await head.initialize();
-      head.run().catch((err) =>
-        ctx.logger.error(`[PimClaw] Head error: ${err}`),
-      );
-
       ctx.logger.info(
-        '[PimClaw] All agents started (TaskRecorder → Scheduler → Head)',
+        '[PimClaw] Components started (TaskRecorder → AnomalyReceiver → Scheduler)',
       );
     },
 
     async stop(ctx: OpenClawPluginServiceContext) {
-      ctx.logger.info('[PimClaw] Stopping agents…');
+      ctx.logger.info('[PimClaw] Stopping components…');
 
-      // Reverse startup order
-      if (head) {
-        await head.shutdown();
-        head = null;
-      }
       if (scheduler) {
         await scheduler.shutdown();
         scheduler = null;
       }
+      anomalyReceiver = null;
       if (taskRecorder) {
         await taskRecorder.persist();
         taskRecorder = null;
       }
       registry = null;
 
-      ctx.logger.info('[PimClaw] All agents stopped');
+      ctx.logger.info('[PimClaw] All components stopped');
     },
   };
 }
@@ -96,14 +102,143 @@ function createPimClawService(): OpenClawPluginService {
 // ─── Tool builders ─────────────────────────────────────────────────────────
 
 function buildPimClawTools() {
-  // Each builder returns an AnyAgentTool-compatible object.
-  // They close over the module-level registry / taskRecorder so they always
-  // refer to the current running instance (set by the service start hook).
+
+  // ── Gate 1: LLM Head Agent → Plugin ──────────────────────────────────────
+
+  const submitAnomaliesTool = () => ({
+    name: 'pimclaw_submit_anomalies',
+    description:
+      'Submit detected anomaly events for task planning. Called by the PimClaw Head Agent after analyzing Grafana metrics.',
+    parameters: {
+      type: 'object' as const,
+      properties: {
+        events: {
+          type: 'array',
+          description: 'Array of anomaly events detected by the Head Agent',
+          items: {
+            type: 'object',
+            properties: {
+              type: { type: 'string', enum: ['spike', 'drop', 'trend', 'anomaly'] },
+              metricName: { type: 'string' },
+              currentValue: { type: 'number' },
+              previousValue: { type: 'number' },
+              severity: { type: 'string', enum: ['high', 'medium', 'low'] },
+              deploymentName: { type: 'string' },
+              reasoning: { type: 'string' },
+            },
+            required: ['type', 'metricName', 'currentValue', 'severity', 'deploymentName'],
+          },
+        },
+      },
+      required: ['events'],
+    },
+    async execute(_sessionId: string, params: Record<string, unknown>) {
+      if (!anomalyReceiver) {
+        return { output: JSON.stringify({ error: 'PimClaw service not running' }) };
+      }
+      try {
+        const events = params.events as AnomalyEvent[];
+        const validated = await anomalyReceiver.receive(events);
+        return {
+          output: JSON.stringify({
+            success: true,
+            accepted: validated.length,
+            tasks: validated.map((e) => ({ taskId: e.taskId, eventId: e.eventId })),
+          }),
+        };
+      } catch (err) {
+        return {
+          output: JSON.stringify({
+            error: err instanceof Error ? err.message : String(err),
+          }),
+        };
+      }
+    },
+  });
+
+  // ── Gate 2: LLM Planner Agent → Plugin ───────────────────────────────────
+
+  const planTaskTool = () => ({
+    name: 'pimclaw_plan_task',
+    description:
+      'Submit a deployment configuration plan for a task in planning state. Called by the PimClaw Planner Agent after analyzing perf data and simulation results.',
+    parameters: {
+      type: 'object' as const,
+      properties: {
+        taskId: { type: 'string', description: 'The task ID to attach the plan to' },
+        taskType: {
+          type: 'string',
+          enum: ['scale-up', 'scale-down', 'restart', 'reconfigure'],
+          description: 'Type of deployment change',
+        },
+        config: {
+          type: 'object',
+          description: 'Deployment configuration to apply',
+          properties: {
+            replicas: { type: 'number' },
+            dtype: { type: 'string' },
+            quantization: { type: 'string' },
+            maxBatchSize: { type: 'number' },
+            tensorParallelism: { type: 'number' },
+          },
+        },
+        reasoning: { type: 'string', description: 'Why this config was selected' },
+        perfEvidence: { type: 'string', description: 'Historical perf data supporting this choice' },
+        simulationResults: { type: 'string', description: 'Simulation predictions for this config' },
+      },
+      required: ['taskId', 'taskType', 'config', 'reasoning'],
+    },
+    async execute(_sessionId: string, params: Record<string, unknown>) {
+      if (!taskRecorder) {
+        return { output: JSON.stringify({ error: 'PimClaw service not running' }) };
+      }
+      try {
+        const taskId = params.taskId as string;
+        const task = taskRecorder.getTask(taskId);
+        if (!task) {
+          return { output: JSON.stringify({ error: `Task ${taskId} not found` }) };
+        }
+        if (task.status !== 'planning') {
+          return {
+            output: JSON.stringify({
+              error: `Task ${taskId} is in '${task.status}' state, expected 'planning'`,
+            }),
+          };
+        }
+
+        // Attach plan data to the task
+        task.taskType = params.taskType as string;
+        task.config = params.config as Record<string, unknown>;
+        task.reasoning = params.reasoning as string;
+        task.perfEvidence = params.perfEvidence as string | undefined;
+        task.simulationResults = params.simulationResults as string | undefined;
+
+        // Transition planning → ready
+        await taskRecorder.updateTaskStatus(taskId, 'ready');
+
+        return {
+          output: JSON.stringify({
+            success: true,
+            taskId,
+            message: `Task ${taskId} planned and ready for scheduling`,
+          }),
+        };
+      } catch (err) {
+        return {
+          output: JSON.stringify({
+            error: err instanceof Error ? err.message : String(err),
+          }),
+        };
+      }
+    },
+  });
+
+  // ── Existing tools ───────────────────────────────────────────────────────
 
   const routeTaskTool = () => ({
     name: 'pimclaw_route_task',
     description:
-      'Submit a task to PimClaw. The Scheduler Agent picks it up and creates a Worker.',
+      'Submit a task directly to PimClaw (bypasses Head/Planner). The Scheduler picks it up and creates a Worker.',
     parameters: {
       type: 'object' as const,
       properties: {
@@ -153,15 +288,15 @@ function buildPimClawTools() {
     },
   });
 
-  const listAgentsTool = () => ({
-    name: 'pimclaw_list_agents',
-    description: 'List all active PimClaw agents and their runtime status.',
+  const listComponentsTool = () => ({
+    name: 'pimclaw_list_components',
+    description: 'List all active PimClaw components (Scheduler, Task Status Recorder, Workers) and their runtime status.',
     parameters: {
       type: 'object' as const,
       properties: {
-        agentType: {
+        componentType: {
           type: 'string',
-          description: 'Filter by type (head, scheduler, recorder, worker)',
+          description: 'Filter by type (scheduler, recorder, worker)',
         },
       },
     },
@@ -169,37 +304,37 @@ function buildPimClawTools() {
       if (!registry) {
         return { output: JSON.stringify({ error: 'PimClaw service not running' }) };
       }
-      const agents = registry.getAllAgentsStatus();
-      const filtered = params.agentType
-        ? agents.filter((a) => a.agentType === params.agentType)
-        : agents;
+      const components = registry.getAllAgentsStatus();
+      const filtered = params.componentType
+        ? components.filter((a) => a.agentType === params.componentType)
+        : components;
       return { output: JSON.stringify(filtered) };
     },
   });
 
-  const agentStatusTool = () => ({
-    name: 'pimclaw_agent_status',
-    description: 'Get detailed runtime status of a specific PimClaw agent.',
+  const componentStatusTool = () => ({
+    name: 'pimclaw_component_status',
+    description: 'Get detailed runtime status of a specific PimClaw component.',
     parameters: {
       type: 'object' as const,
       properties: {
-        agentId: { type: 'string', description: 'Agent ID' },
+        componentId: { type: 'string', description: 'Component ID' },
       },
-      required: ['agentId'],
+      required: ['componentId'],
     },
     async execute(_sessionId: string, params: Record<string, unknown>) {
       if (!registry) {
         return { output: JSON.stringify({ error: 'PimClaw service not running' }) };
       }
-      const status = registry.getAgentStatus(params.agentId as string);
-      return { output: JSON.stringify(status ?? { error: 'Agent not found' }) };
+      const status = registry.getAgentStatus(params.componentId as string);
+      return { output: JSON.stringify(status ?? { error: 'Component not found' }) };
     },
   });
 
   const healthTool = () => ({
     name: 'pimclaw_health',
     description:
-      'Get the overall PimClaw health report including agent status and detected issues.',
+      'Get the overall PimClaw health report including component status and detected issues.',
     parameters: { type: 'object' as const, properties: {} },
     async execute() {
       if (!registry) {
@@ -230,7 +365,7 @@ function buildPimClawTools() {
         status: {
           type: 'string',
           description:
-            'Filter by status (ready, scheduling, scheduled, running, done, failed, expired)',
+            'Filter by status (planning, ready, scheduling, scheduled, running, done, failed, expired)',
         },
         limit: { type: 'number', description: 'Max results (default 20)' },
       },
@@ -302,9 +437,11 @@ function buildPimClawTools() {
   });
 
   return [
+    submitAnomaliesTool,
+    planTaskTool,
     routeTaskTool,
-    listAgentsTool,
-    agentStatusTool,
+    listComponentsTool,
+    componentStatusTool,
     healthTool,
     taskCountsTool,
     listTasksTool,
@@ -313,23 +450,21 @@ function buildPimClawTools() {
   ];
 }
 
-// ─── Plugin entry point ────────────────────────────────────────────────────
+// ─── Plugin entry ──────────────────────────────────────────────────────────
 
 export default definePluginEntry({
   id: 'pimclaw',
   name: 'PimClaw',
   description:
-    'LLM deployment orchestration — automatically monitors metrics, detects anomalies, and schedules corrective tasks.',
+    'LLM deployment orchestration — monitors metrics via LLM Head Agent, plans configs via LLM Planner Agent, and executes changes via programmatic Scheduler/Workers.',
 
   register(api: OpenClawPluginApi) {
-    // 1. Register the background service that boots all agents
     api.registerService(createPimClawService());
 
-    // 2. Register each tool so OpenClaw agents can call them
     for (const toolFactory of buildPimClawTools()) {
       api.registerTool(toolFactory);
     }
 
-    api.logger.info('[PimClaw] Plugin registered');
+    api.logger.info('[PimClaw] Plugin registered (v2 hybrid architecture)');
   },
 });

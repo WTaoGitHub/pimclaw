@@ -3,6 +3,7 @@
  */
 
 export type TaskStatus =
+  | 'planning'
   | 'ready'
   | 'scheduling'
   | 'scheduled'
@@ -23,6 +24,10 @@ export interface Task {
   llmDeploymentName: string;
   taskType: string; // e.g., 'scale-up', 'scale-down', 'change-parallelism'
   taskData: Record<string, unknown>;
+  config?: Record<string, unknown>;
+  reasoning?: string;
+  perfEvidence?: string;
+  simulationResults?: string;
   retryCount: number;
   maxRetries: number;
   schedulerId?: string; // which Scheduler owns this task during scheduling/scheduled

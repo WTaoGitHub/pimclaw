@@ -4,13 +4,34 @@
   "configSchema": {
     "type": "object",
     "additionalProperties": false,
-    "properties": {}
+    "properties": {
+      "anomalyReceiver": {
+        "type": "object",
+        "properties": {
+          "maxEventsPerSubmission": { "type": "number", "default": 20 },
+          "deduplicationWindowMs": { "type": "number", "default": 600000 },
+          "planningTimeoutMs": { "type": "number", "default": 600000 },
+          "allowedMetrics": { "type": "array", "items": { "type": "string" } }
+        }
+      },
+      "planner": {
+        "type": "object",
+        "properties": {
+          "agentId": { "type": "string", "default": "pimclaw-planner" },
+          "timeoutSeconds": { "type": "number", "default": 600 },
+          "fallbackTaskType": { "type": "string", "default": "scale-up" },
+          "fallbackConfig": { "type": "object" }
+        }
+      }
+    }
   },
   "contracts": {
     "tools": [
+      "pimclaw_submit_anomalies",
+      "pimclaw_plan_task",
       "pimclaw_route_task",
-      "pimclaw_list_agents",
-      "pimclaw_agent_status",
+      "pimclaw_list_components",
+      "pimclaw_component_status",
       "pimclaw_health",
       "pimclaw_task_counts",
       "pimclaw_list_tasks",

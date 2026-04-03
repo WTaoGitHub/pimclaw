@@ -1,25 +1,32 @@
 /**
- * PimClaw - LLM Deployment Orchestration System
+ * PimClaw - LLM Deployment Orchestration System (v2 Hybrid Architecture)
  *
  * When used as an OpenClaw plugin the default export from
  * ./openclaw-plugin.ts is the entry point — it registers a background
- * service that boots all agents and exposes tools to OpenClaw.
+ * service that boots PimClaw components and exposes tools to OpenClaw agents.
  *
- * This file re-exports the building blocks for standalone use or
- * advanced composition.
+ * LLM Head and Planner agents run externally via OpenClaw's agent runtime.
+ * See AGENTS.md for their definitions.
  */
 
 // ── OpenClaw plugin entry (default export) ─────────────────────────────────
 export { default } from './openclaw-plugin.js';
 
 // ── Core orchestration components ──────────────────────────────────────────
-export { AgentRegistry } from './master/agent-registry.js';
-export type { HealthReport, HealthIssue } from './master/agent-registry.js';
+export { ComponentRegistry } from './master/component-registry.js';
+/** @deprecated Use ComponentRegistry instead */
+export { ComponentRegistry as AgentRegistry } from './master/component-registry.js';
+export type { HealthReport, HealthIssue } from './master/component-registry.js';
 export { TaskStatusRecorder } from './master/task-status-recorder.js';
 export { BaseAgent } from './master/base-agent.js';
 export { SchedulerAgent } from './master/scheduler-agent.js';
-export { HeadAgent } from './master/head-agent.js';
 export { WorkerAgent } from './master/worker-agent.js';
+
+// ── Integration boundary ──────────────────────────────────────────────────
+export { AnomalyReceiver } from './master/anomaly-receiver.js';
+export type { AnomalyEvent, ValidatedEvent, AnomalyReceiverConfig } from './master/anomaly-receiver.js';
+export { PlannerTrigger } from './master/planner-trigger.js';
+export type { OpenClawAgentApi, PlannerTriggerConfig } from './master/planner-trigger.js';
 
 // ── MCP integration ───────────────────────────────────────────────────────
 export { PimClawMCPServer } from './master/mcp-server.js';

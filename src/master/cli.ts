@@ -1,56 +1,49 @@
 #!/usr/bin/env node
 
 /**
- * PimClaw MCP-CLI Tool
- * Shell-based interface for operators and agents to interact with PimClaw
- * Commands: pimclaw {agents|tasks|mcp|health}
+ * PimClaw CLI Tool — v2
+ * Shell-based interface for operators to interact with PimClaw.
+ * Commands: pimclaw {components|tasks|mcp|health}
  */
 
 import { program } from 'commander';
-import { AgentRegistry } from './agent-registry.js';
+import { ComponentRegistry } from './component-registry.js';
 import { TaskStatusRecorder } from './task-status-recorder.js';
 import { Task } from '../types/index.js';
 import { v4 as uuidv4 } from 'uuid';
 import fs from 'fs/promises';
 import path from 'path';
 
-// Global instances (in real usage, would connect to running agents)
-let registry: AgentRegistry;
+let registry: ComponentRegistry;
 let taskRecorder: TaskStatusRecorder;
 
-/**
- * Initialize CLI
- */
 async function initializeCLI(): Promise<void> {
-  registry = new AgentRegistry();
+  registry = new ComponentRegistry();
   taskRecorder = new TaskStatusRecorder();
   await taskRecorder.initialize();
 }
 
-/**
- * Setup CLI commands
- */
 function setupCommands(): void {
-  // AGENTS COMMANDS
+  // COMPONENT COMMANDS
   program
-    .command('agents')
-    .description('Agent management commands')
+    .command('components')
+    .description('Component management commands')
     .command('list')
-    .option('--type <type>', 'Filter by agent type')
-    .description('List all agents')
+    .option('--type <type>', 'Filter by component type')
+    .description('List all components')
     .action((options) => {
-      const agents = registry.getAllAgentsStatus();
+      const components = registry.getAllAgentsStatus();
       const filtered = options.type
-        ? agents.filter((a) => a.agentType === options.type)
-        : agents;
+        ? components.filter((a) => a.agentType === options.type)
+        : components;
       console.log(JSON.stringify(filtered, null, 2));
     });
 
   program
-    .command('agents:status <agentId>')
-    .description('Get status of specific agent')
-    .action((agentId) => {
-      const status = registry.getAgentStatus(agentId);
+    .command('components:status <componentId>')
+    .description('Get status of specific component')
+    .action((componentId) => {
+      const status = registry.getAgentStatus(componentId);
       console.log(JSON.stringify(status, null, 2));
     });
 

@@ -4,7 +4,7 @@
  */
 
 import { AgentRuntimeStatus, AgentType, AgentStatus, AgentConfig } from '../types/index.js';
-import { AgentRegistry } from './agent-registry.js';
+import { ComponentRegistry } from './component-registry.js';
 import { Client as MCPClient } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { v4 as uuidv4 } from 'uuid';
@@ -16,12 +16,12 @@ export abstract class BaseAgent {
   protected agentId: string;
   protected agentType: AgentType;
   protected status: AgentStatus = 'Starting';
-  protected registry: AgentRegistry;
+  protected registry: ComponentRegistry;
   protected config: AgentConfig;
   protected mcpClients: Map<string, MCPClient> = new Map();
   protected startedAt: Date;
 
-  constructor(agentType: AgentType, registry: AgentRegistry, config?: AgentConfig) {
+  constructor(agentType: AgentType, registry: ComponentRegistry, config?: AgentConfig) {
     this.agentType = agentType;
     this.registry = registry;
     this.agentId = config?.agentId || `${agentType}-${uuidv4()}`;

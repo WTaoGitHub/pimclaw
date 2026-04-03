@@ -16,7 +16,7 @@ import {
  * Central registry for all live agents in PimClaw
  * Maintains runtime status of all active agents and exposes it via MCP tools
  */
-export class AgentRegistry extends EventEmitter {
+export class ComponentRegistry extends EventEmitter {
   private agents: Map<string, AgentRuntimeStatus> = new Map();
   private readonly startTime = new Date();
 

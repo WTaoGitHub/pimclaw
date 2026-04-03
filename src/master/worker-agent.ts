@@ -8,7 +8,7 @@
  */
 
 import { BaseAgent } from './base-agent.js';
-import { AgentRegistry } from './agent-registry.js';
+import { ComponentRegistry } from './component-registry.js';
 import { TaskStatusRecorder } from './task-status-recorder.js';
 import { Task, AgentRuntimeStatus } from '../types/index.js';
 
@@ -22,7 +22,7 @@ export class WorkerAgent extends BaseAgent {
   private executionTimeout: number = 30 * 60 * 1000; // 30 minutes
 
   constructor(
-    registry: AgentRegistry,
+    registry: ComponentRegistry,
     taskRecorder: TaskStatusRecorder,
     task: Task
   ) {

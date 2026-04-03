@@ -14,6 +14,16 @@ import path from 'path';
 export class TaskStatusRecorder {
   private tasks: Map<string, Task> = new Map();
   private readonly storagePath: string;
+  private readonly allowedTransitions: Record<TaskStatus, TaskStatus[]> = {
+    planning: ['ready', 'expired'],
+    ready: ['scheduling', 'expired'],
+    scheduling: ['scheduled', 'expired'],
+    scheduled: ['running', 'expired'],
+    running: ['done', 'failed', 'expired'],
+    done: [],
+    failed: ['ready', 'expired'],
+    expired: [],
+  };
 
   constructor(storagePath: string = './pimclaw-tasks') {
     this.storagePath = storagePath;
@@ -44,6 +54,15 @@ export class TaskStatusRecorder {
         if (
           task.status === 'scheduling' &&
           now.getTime() - new Date(task.statusModifiedAt).getTime() > 30000
+        ) {
+          task.status = 'expired';
+          task.statusModifiedAt = now;
+        }
+
+        // Mark planning tasks as expired if status unchanged for >10min
+        if (
+          task.status === 'planning' &&
+          now.getTime() - new Date(task.statusModifiedAt).getTime() > 600000
         ) {
           task.status = 'expired';
           task.statusModifiedAt = now;
@@ -96,6 +115,16 @@ export class TaskStatusRecorder {
     if (!task) {
       throw new Error(`Task ${taskId} not found`);
     }
+
+    if (task.status !== newStatus) {
+      const validNext = this.allowedTransitions[task.status] || [];
+      if (!validNext.includes(newStatus)) {
+        throw new Error(
+          `Invalid status transition for task ${taskId}: ${task.status} -> ${newStatus}`,
+        );
+      }
+    }
+
     task.status = newStatus;
     task.statusModifiedAt = new Date();
     await this.persist();
@@ -153,6 +182,7 @@ export class TaskStatusRecorder {
    */
   getTaskCounts(): Record<TaskStatus, number> {
     const counts: Record<TaskStatus, number> = {
+      planning: 0,
       ready: 0,
       scheduling: 0,
       scheduled: 0,
