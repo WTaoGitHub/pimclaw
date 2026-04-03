@@ -94,7 +94,8 @@ describe('PimClaw v2 integration', () => {
     await (scheduler as any).schedulingCycle();
 
     const task = recorder.getTask(taskId);
-    expect(['scheduling', 'scheduled']).toContain(task?.status);
+    // Worker now actually runs: task may have advanced past scheduled to running/failed
+    expect(['scheduling', 'scheduled', 'running', 'failed']).toContain(task?.status);
 
     await scheduler.shutdown();
     await fs.rm(tmpDir, { recursive: true, force: true });

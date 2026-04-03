@@ -1,6 +1,10 @@
 /**
  * AnomalyReceiver — validates events from the LLM Head Agent
  * and triggers the Planner for each validated event.
+ *
+ * Hooks are non-fatal: if a hook throws, the error is logged and
+ * processing continues. Hooks can return { preventContinuation: true }
+ * to skip the Planner trigger for a given event.
  */
 
 import { TaskStatusRecorder } from './task-status-recorder.js';
@@ -22,6 +26,7 @@ export interface ValidatedEvent extends AnomalyEvent {
   eventId: string;
   receivedAt: Date;
   taskId: string;
+  hookDurationMs?: number;
 }
 
 export interface AnomalyReceiverConfig {
@@ -31,8 +36,12 @@ export interface AnomalyReceiverConfig {
   allowedMetrics: string[];
 }
 
+export interface HookResult {
+  preventContinuation?: boolean;
+}
+
 export interface AnomalyReceiverHooks {
-  onPlanningTaskCreated?: (taskId: string, event: ValidatedEvent) => void | Promise<void>;
+  onPlanningTaskCreated?: (taskId: string, event: ValidatedEvent) => HookResult | void | Promise<HookResult | void>;
   onPlannerTriggerFailed?: (taskId: string, event: ValidatedEvent, error: unknown) => void | Promise<void>;
 }
 
@@ -117,14 +126,32 @@ export class AnomalyReceiver {
 
       await this.taskRecorder.createTask(task);
       this.recentEvents.set(dedupKey, new Date());
-      await this.hooks.onPlanningTaskCreated?.(taskId, validatedEvent);
 
-      // Trigger the Planner agent asynchronously
-      this.plannerTrigger
-        .trigger(validatedEvent, taskId)
-        .catch(async (error) => {
-          await this.hooks.onPlannerTriggerFailed?.(taskId, validatedEvent, error);
-        });
+      // Run hook (non-fatal: errors are logged, not propagated)
+      let skipPlanner = false;
+      const hookStart = Date.now();
+      try {
+        const hookResult = await this.hooks.onPlanningTaskCreated?.(taskId, validatedEvent);
+        if (hookResult?.preventContinuation) {
+          skipPlanner = true;
+        }
+      } catch (hookError) {
+        console.error(`[AnomalyReceiver] onPlanningTaskCreated hook error for task ${taskId}:`, hookError);
+      }
+      validatedEvent.hookDurationMs = Date.now() - hookStart;
+
+      // Trigger the Planner agent asynchronously (unless hook prevented it)
+      if (!skipPlanner) {
+        this.plannerTrigger
+          .trigger(validatedEvent, taskId)
+          .catch(async (error) => {
+            try {
+              await this.hooks.onPlannerTriggerFailed?.(taskId, validatedEvent, error);
+            } catch (hookError) {
+              console.error(`[AnomalyReceiver] onPlannerTriggerFailed hook error for task ${taskId}:`, hookError);
+            }
+          });
+      }
 
       validated.push(validatedEvent);
     }

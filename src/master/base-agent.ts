@@ -10,16 +10,34 @@ import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 import { v4 as uuidv4 } from 'uuid';
 
 /**
+ * Lifecycle phases for agent runtime management.
+ * Transitions: init → running → aborting? → cleanup → stopped
+ *                                                   → error
+ */
+export type LifecyclePhase = 'init' | 'running' | 'aborting' | 'cleanup' | 'stopped' | 'error';
+
+/**
+ * A tracked resource that must be cleaned up when the agent shuts down.
+ */
+interface OwnedResource {
+  name: string;
+  cleanup: () => Promise<void>;
+}
+
+/**
  * Base class for all PimClaw agents
  */
 export abstract class BaseAgent {
   protected agentId: string;
   protected agentType: AgentType;
   protected status: AgentStatus = 'Starting';
+  protected lifecyclePhase: LifecyclePhase = 'init';
   protected registry: ComponentRegistry;
   protected config: AgentConfig;
   protected mcpClients: Map<string, MCPClient> = new Map();
   protected startedAt: Date;
+  protected abortController: AbortController = new AbortController();
+  private ownedResources: OwnedResource[] = [];
 
   constructor(agentType: AgentType, registry: ComponentRegistry, config?: AgentConfig) {
     this.agentType = agentType;
@@ -30,6 +48,32 @@ export abstract class BaseAgent {
       agentType: agentType,
     };
     this.startedAt = new Date();
+  }
+
+  /**
+   * Track a resource that must be cleaned up on shutdown.
+   * Resources are cleaned up in reverse order (last registered, first cleaned).
+   */
+  protected trackResource(name: string, cleanup: () => Promise<void>): void {
+    this.ownedResources.push({ name, cleanup });
+  }
+
+  /**
+   * Abort the agent. Signals the abort controller and transitions to 'aborting' phase.
+   */
+  abort(reason?: string): void {
+    if (this.lifecyclePhase === 'stopped' || this.lifecyclePhase === 'cleanup') {
+      return;
+    }
+    this.lifecyclePhase = 'aborting';
+    this.abortController.abort(reason ?? 'agent aborted');
+  }
+
+  /**
+   * Whether this agent has been aborted.
+   */
+  get aborted(): boolean {
+    return this.abortController.signal.aborted;
   }
 
   /**
@@ -44,6 +88,7 @@ export abstract class BaseAgent {
     // Connect to MCP services
     await this.connectToMCPServices();
 
+    this.lifecyclePhase = 'running';
     this.updateStatus('Listening');
   }
 
@@ -75,6 +120,16 @@ export abstract class BaseAgent {
         await client.connect(transport);
         this.mcpClients.set(serviceName, client);
         this.registry.updateMCPConnection(this.agentId, serviceName, 'connected');
+
+        // Track MCP client for deterministic cleanup
+        this.trackResource(`mcp:${serviceName}`, async () => {
+          try {
+            await client.close();
+          } catch {
+            // Connection may already be closed
+          }
+          this.mcpClients.delete(serviceName);
+        });
       } catch (error) {
         console.error(`Failed to connect to MCP service ${serviceName}:`, error);
         this.registry.updateMCPConnection(
@@ -170,16 +225,41 @@ export abstract class BaseAgent {
   }
 
   /**
-   * Shutdown the agent
+   * Shutdown the agent. Cleans up all owned resources in reverse order,
+   * then deregisters from the registry.
    */
   async shutdown(): Promise<void> {
-    this.updateStatus('Stopping');
-
-    // Close all MCP connections
-    for (const client of this.mcpClients.values()) {
-      await client.close();
+    if (this.lifecyclePhase === 'cleanup' || this.lifecyclePhase === 'stopped') {
+      return; // prevent double-shutdown
     }
 
+    this.lifecyclePhase = 'cleanup';
+    this.updateStatus('Stopping');
+
+    // Clean up owned resources in reverse order (last registered first)
+    for (const resource of [...this.ownedResources].reverse()) {
+      try {
+        await resource.cleanup();
+      } catch (err) {
+        this.registry.recordError(
+          this.agentId,
+          `Cleanup failed for ${resource.name}: ${err instanceof Error ? err.message : String(err)}`
+        );
+      }
+    }
+    this.ownedResources = [];
+
+    // Close any MCP clients not tracked via trackResource (backward compat)
+    for (const client of this.mcpClients.values()) {
+      try {
+        await client.close();
+      } catch {
+        // ignore
+      }
+    }
+    this.mcpClients.clear();
+
+    this.lifecyclePhase = 'stopped';
     this.updateStatus('Stopped');
     this.registry.deregisterAgent(this.agentId);
   }
@@ -194,5 +274,12 @@ export abstract class BaseAgent {
    */
   getRuntimeStatus(): AgentRuntimeStatus | undefined {
     return this.registry.getAgentStatus(this.agentId);
+  }
+
+  /**
+   * Get the current lifecycle phase
+   */
+  getLifecyclePhase(): LifecyclePhase {
+    return this.lifecyclePhase;
   }
 }

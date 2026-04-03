@@ -11,6 +11,8 @@
 
 // ── OpenClaw plugin entry (default export) ─────────────────────────────────
 export { default } from './openclaw-plugin.js';
+export { registerToolHook } from './openclaw-plugin.js';
+export type { ToolHook } from './openclaw-plugin.js';
 
 // ── Core orchestration components ──────────────────────────────────────────
 export { ComponentRegistry } from './master/component-registry.js';
@@ -19,12 +21,13 @@ export { ComponentRegistry as AgentRegistry } from './master/component-registry.
 export type { HealthReport, HealthIssue } from './master/component-registry.js';
 export { TaskStatusRecorder } from './master/task-status-recorder.js';
 export { BaseAgent } from './master/base-agent.js';
+export type { LifecyclePhase } from './master/base-agent.js';
 export { SchedulerAgent } from './master/scheduler-agent.js';
 export { WorkerAgent } from './master/worker-agent.js';
 
 // ── Integration boundary ──────────────────────────────────────────────────
 export { AnomalyReceiver } from './master/anomaly-receiver.js';
-export type { AnomalyEvent, ValidatedEvent, AnomalyReceiverConfig } from './master/anomaly-receiver.js';
+export type { AnomalyEvent, ValidatedEvent, AnomalyReceiverConfig, HookResult } from './master/anomaly-receiver.js';
 export { PlannerTrigger } from './master/planner-trigger.js';
 export type { OpenClawAgentApi, PlannerTriggerConfig } from './master/planner-trigger.js';
 

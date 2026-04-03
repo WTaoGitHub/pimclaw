@@ -4,6 +4,11 @@
   "description": "LLM Deployment Orchestration System with Multi-Agent Coordination",
   "type": "module",
   "main": "dist/index.js",
+  "openclaw": {
+    "extensions": [
+      "./index.ts"
+    ]
+  },
   "files": [
     "dist",
     "openclaw.plugin.json"

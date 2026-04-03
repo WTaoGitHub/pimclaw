@@ -1,11 +1,12 @@
 /**
  * Scheduler Agent - Manages task scheduling and Worker Agent creation
- * Implements concurrency limiting and task expiry enforcement
+ * Implements concurrency limiting, task expiry enforcement, and abort propagation
  */
 
 import { BaseAgent } from './base-agent.js';
 import { ComponentRegistry } from './component-registry.js';
 import { TaskStatusRecorder } from './task-status-recorder.js';
+import { WorkerAgent } from './worker-agent.js';
 import { Task } from '../types/index.js';
 
 /**
@@ -14,11 +15,12 @@ import { Task } from '../types/index.js';
  * - Fetches ready tasks from Task Status Recorder
  * - Creates ephemeral Worker Agents
  * - Enforces concurrency limits and timeouts
+ * - Propagates abort to child Workers on shutdown
  */
 export class SchedulerAgent extends BaseAgent {
   private taskRecorder: TaskStatusRecorder;
   private maxConcurrentWorkers: number = 10;
-  private activeWorkers: Set<string> = new Set(); // task IDs of running workers
+  private workers: Map<string, WorkerAgent> = new Map();
   private pollingIntervalMs: number = 5000; // poll every 5 seconds
   private isRunning: boolean = false;
 
@@ -44,11 +46,12 @@ export class SchedulerAgent extends BaseAgent {
     this.isRunning = true;
     this.updateAction('Starting polling loop');
 
-    while (this.isRunning && this.status === 'Listening') {
+    while (this.isRunning && this.status === 'Listening' && !this.aborted) {
       try {
         await this.schedulingCycle();
         await this.sleep(this.pollingIntervalMs);
       } catch (error) {
+        if (this.aborted) break;
         this.registry.recordError(
           this.agentId,
           `Scheduler error: ${error instanceof Error ? error.message : String(error)}`
@@ -67,11 +70,11 @@ export class SchedulerAgent extends BaseAgent {
     // Get current task counts
     const counts = this.taskRecorder.getTaskCounts();
     const availableSlots =
-      this.maxConcurrentWorkers - this.activeWorkers.size;
+      this.maxConcurrentWorkers - this.workers.size;
 
     if (availableSlots <= 0) {
       this.updateAction(
-        `At capacity: ${this.activeWorkers.size}/${this.maxConcurrentWorkers} workers active`
+        `At capacity: ${this.workers.size}/${this.maxConcurrentWorkers} workers active`
       );
       return;
     }
@@ -87,7 +90,7 @@ export class SchedulerAgent extends BaseAgent {
 
     // Update counters
     this.registry.updateCounters(this.agentId, {
-      activeWorkers: this.activeWorkers.size,
+      activeWorkers: this.workers.size,
       maxWorkers: this.maxConcurrentWorkers,
       tasksScheduled: readyTasks.length,
     });
@@ -111,12 +114,20 @@ export class SchedulerAgent extends BaseAgent {
       await this.taskRecorder.updateTaskStatus(task.taskId, 'scheduling');
       this.updateAction(`Scheduling task ${task.taskId}`);
 
-      // Create a Worker Agent (TODO: implement Worker class)
-      // For now, just track it as scheduled
-      this.activeWorkers.add(task.taskId);
+      // Create and track a Worker Agent
+      const worker = new WorkerAgent(this.registry, this.taskRecorder, task);
+      this.workers.set(task.taskId, worker);
+
+      // Initialize worker (registers in registry, attempts MCP connections)
+      await worker.initialize();
 
       // Update status to scheduled
       await this.taskRecorder.updateTaskStatus(task.taskId, 'scheduled');
+
+      // Run worker in background; remove from map when done
+      worker.run().finally(() => {
+        this.workers.delete(task.taskId);
+      });
 
       console.log(`[Scheduler] Scheduled task ${task.taskId}`);
     } catch (error) {
@@ -128,10 +139,17 @@ export class SchedulerAgent extends BaseAgent {
   }
 
   /**
+   * Get the number of active workers
+   */
+  get activeWorkerCount(): number {
+    return this.workers.size;
+  }
+
+  /**
    * Mark a task as completed (called by Worker)
    */
   async taskCompleted(taskId: string, result: Record<string, unknown>): Promise<void> {
-    this.activeWorkers.delete(taskId);
+    this.workers.delete(taskId);
     await this.taskRecorder.updateTaskResult(taskId, result, null);
     const tasksRescheduled =
       (this.registry.getAgentStatus(this.agentId)?.counters.tasksRescheduled || 0) + 1;
@@ -142,7 +160,7 @@ export class SchedulerAgent extends BaseAgent {
    * Mark a task as failed (called by Worker)
    */
   async taskFailed(taskId: string, error: string): Promise<void> {
-    this.activeWorkers.delete(taskId);
+    this.workers.delete(taskId);
     const task = this.taskRecorder.getTask(taskId);
     if (task && task.retryCount < task.maxRetries) {
       // Retry: reset to ready
@@ -154,17 +172,28 @@ export class SchedulerAgent extends BaseAgent {
   }
 
   /**
-   * Stop the scheduler
+   * Stop the scheduler and abort all child workers
    */
   async shutdown(): Promise<void> {
     this.isRunning = false;
+
+    // Abort all child workers before shutting down
+    for (const [taskId, worker] of this.workers) {
+      worker.abort('parent scheduler shutting down');
+    }
+
     await super.shutdown();
   }
 
   /**
-   * Sleep helper
+   * Sleep helper — resolves immediately if abort signal fires.
    */
   private sleep(ms: number): Promise<void> {
-    return new Promise((resolve) => setTimeout(resolve, ms));
+    return new Promise((resolve) => {
+      if (this.aborted) { resolve(); return; }
+      const timer = setTimeout(resolve, ms);
+      const onAbort = () => { clearTimeout(timer); resolve(); };
+      this.abortController.signal.addEventListener('abort', onAbort, { once: true });
+    });
   }
 }

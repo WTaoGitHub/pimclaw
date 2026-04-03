@@ -46,6 +46,7 @@ export class WorkerAgent extends BaseAgent {
   async run(): Promise<void> {
     this.updateAction(`Executing task ${this.task.taskId}`);
 
+    let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
     try {
       // Mark task as running
       await this.taskRecorder.updateTaskStatus(
@@ -53,10 +54,10 @@ export class WorkerAgent extends BaseAgent {
         'running'
       );
 
-      // Execute the task with timeout
+      // Execute the task with timeout and abort support
       const result = await Promise.race([
         this.executeTask(),
-        this.createTimeout(),
+        this.createAbortableTimeout(),
       ]);
 
       // Mark task as completed
@@ -77,8 +78,19 @@ export class WorkerAgent extends BaseAgent {
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
 
-      // Handle timeout
-      if (errorMessage.includes('timeout')) {
+      // Handle abort
+      if (this.aborted) {
+        await this.taskRecorder.updateTaskResult(
+          this.task.taskId,
+          null,
+          `Task aborted: ${errorMessage}`,
+        );
+        this.registry.recordError(
+          this.agentId,
+          `Aborted task ${this.task.taskId}: ${errorMessage}`
+        );
+      } else if (errorMessage.includes('timeout')) {
+        // Handle timeout
         await this.taskRecorder.updateTaskResult(
           this.task.taskId,
           null,
@@ -101,8 +113,8 @@ export class WorkerAgent extends BaseAgent {
         this.registry.recordError(this.agentId, errorMessage);
       }
 
-      // Handle retry logic
-      if (this.task.retryCount < this.task.maxRetries) {
+      // Handle retry logic (skip if aborted — don't retry aborted tasks)
+      if (!this.aborted && this.task.retryCount < this.task.maxRetries) {
         // Reset task to ready for retry
         await this.taskRecorder.resetTaskForRetry(this.task.taskId);
       }
@@ -146,14 +158,33 @@ export class WorkerAgent extends BaseAgent {
   }
 
   /**
-   * Create a timeout promise
+   * Create a timeout promise that is properly cleaned up.
+   * Listens to the abort signal so external abort also resolves the race.
    */
-  private createTimeout(): Promise<never> {
-    return new Promise((_, reject) => {
-      setTimeout(
+  private createAbortableTimeout(): Promise<never> {
+    return new Promise<never>((_, reject) => {
+      // If already aborted, reject immediately
+      if (this.abortController.signal.aborted) {
+        reject(new Error('Task aborted before execution'));
+        return;
+      }
+
+      const timer = setTimeout(
         () => reject(new Error(`timeout: Task exceeded ${this.executionTimeout}ms limit`)),
-        this.executionTimeout
+        this.executionTimeout,
       );
+
+      // Track the timer for cleanup
+      this.trackResource('execution-timeout', async () => {
+        clearTimeout(timer);
+      });
+
+      // Listen for abort signal
+      const onAbort = () => {
+        clearTimeout(timer);
+        reject(new Error(`Task aborted: ${this.abortController.signal.reason ?? 'no reason'}`));
+      };
+      this.abortController.signal.addEventListener('abort', onAbort, { once: true });
     });
   }
 

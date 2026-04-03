@@ -29,6 +29,78 @@ import { PlannerTrigger } from './master/planner-trigger.js';
 import type { Task } from './types/index.js';
 import { v4 as uuidv4 } from 'uuid';
 
+// ─── Tool hook governance ──────────────────────────────────────────────────
+
+/**
+ * Hook interface for tool execution governance.
+ * All hooks are non-fatal — errors are caught and logged, never kill tool execution.
+ */
+export interface ToolHook {
+  preToolUse?(toolName: string, params: Record<string, unknown>): Promise<{
+    updatedInput?: Record<string, unknown>;
+    blockingError?: string;
+  } | void>;
+  postToolUse?(toolName: string, result: unknown, durationMs: number): Promise<void>;
+  postToolUseFailure?(toolName: string, error: unknown, durationMs: number): Promise<void>;
+}
+
+interface ToolDefinition {
+  name: string;
+  description: string;
+  parameters: Record<string, unknown>;
+  execute: (sessionId: string, params: Record<string, unknown>) => Promise<{ output: string }>;
+}
+
+/**
+ * Wrap a tool definition with hook governance.
+ * Hooks run before/after tool execution but never block the pipeline on failure.
+ */
+function withHooks(tool: ToolDefinition, hooks: ToolHook[]): ToolDefinition {
+  if (hooks.length === 0) return tool;
+
+  const originalExecute = tool.execute;
+  tool.execute = async (sessionId: string, params: Record<string, unknown>) => {
+    // Pre hooks
+    let effectiveParams = params;
+    for (const hook of hooks) {
+      try {
+        const pre = await hook.preToolUse?.(tool.name, effectiveParams);
+        if (pre?.blockingError) {
+          return { output: JSON.stringify({ error: pre.blockingError }) };
+        }
+        if (pre?.updatedInput) {
+          effectiveParams = pre.updatedInput;
+        }
+      } catch {
+        // Non-fatal: skip this hook
+      }
+    }
+
+    const start = Date.now();
+    try {
+      const result = await originalExecute(sessionId, effectiveParams);
+      const duration = Date.now() - start;
+
+      // Post hooks (non-fatal)
+      for (const hook of hooks) {
+        try { await hook.postToolUse?.(tool.name, result, duration); } catch { /* non-fatal */ }
+      }
+
+      return result;
+    } catch (err) {
+      const duration = Date.now() - start;
+
+      // Failure hooks (non-fatal)
+      for (const hook of hooks) {
+        try { await hook.postToolUseFailure?.(tool.name, err, duration); } catch { /* non-fatal */ }
+      }
+
+      throw err;
+    }
+  };
+  return tool;
+}
+
 // ─── Shared state across the plugin (lives for the OpenClaw process) ───────
 
 let registry: ComponentRegistry | null = null;
@@ -40,6 +112,7 @@ let plannerFallbackConfig: Record<string, unknown> = { replicaDelta: 1 };
 let planningTimeoutMs = 600_000;
 let pluginLogger: OpenClawPluginServiceContext['logger'] | null = null;
 const planningFallbackTimers: Map<string, ReturnType<typeof setTimeout>> = new Map();
+const toolHooks: ToolHook[] = [];
 
 function clearPlanningFallback(taskId: string): void {
   const timer = planningFallbackTimers.get(taskId);
@@ -78,6 +151,14 @@ function schedulePlanningFallback(taskId: string): void {
     void applyFallbackPlan(taskId, `planner timeout after ${planningTimeoutMs}ms`);
   }, planningTimeoutMs);
   planningFallbackTimers.set(taskId, timer);
+}
+
+/**
+ * Register a tool hook for governance.
+ * Hooks are applied to all 10 PimClaw tools and are non-fatal.
+ */
+export function registerToolHook(hook: ToolHook): void {
+  toolHooks.push(hook);
 }
 
 // ─── Service: lifecycle-managed PimClaw components ─────────────────────────
@@ -158,6 +239,7 @@ function createPimClawService(): OpenClawPluginService {
       }
       registry = null;
       pluginLogger = null;
+      toolHooks.length = 0;
 
       ctx.logger.info('[PimClaw] All components stopped');
     },
@@ -529,7 +611,12 @@ export default definePluginEntry({
     api.registerService(createPimClawService());
 
     for (const toolFactory of buildPimClawTools()) {
-      api.registerTool(toolFactory);
+      // Wrap each tool factory with hook governance
+      const wrappedFactory = () => {
+        const tool = toolFactory();
+        return withHooks(tool as ToolDefinition, toolHooks);
+      };
+      api.registerTool(wrappedFactory);
     }
 
     api.logger.info('[PimClaw] Plugin registered (v2 hybrid architecture)');
