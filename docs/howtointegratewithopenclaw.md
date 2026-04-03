@@ -2,16 +2,19 @@
 
 ## What Happens When You Install PimClaw
 
-PimClaw is a standard OpenClaw plugin. When OpenClaw activates it:
+PimClaw is a standard OpenClaw plugin using a **v2 hybrid architecture**: two external LLM agents (Head + Planner) handle anomaly detection and configuration planning, while deterministic components inside the plugin handle task scheduling and execution.
 
-1. **Service starts** — the `pimclaw-agents` service boots three background agents inside the OpenClaw process:
-   - **Task Status Recorder** — initializes first, recovers persisted tasks and marks stale ones expired
-   - **Scheduler Agent** — polls for ready tasks every 5 s, creates Worker Agents (up to 10 concurrent)
-   - **Head Agent** — runs the Observe-Think-Decide loop every 5 min, collecting Grafana metrics, detecting anomalies, and planning corrective tasks
-2. **Tools appear** — eight tools become available to every OpenClaw agent session (see table below)
-3. **Service stops** — when OpenClaw shuts down, agents are stopped in reverse order and task state is persisted
+When OpenClaw activates the plugin:
 
-All agent data is stored in OpenClaw's `stateDir` so it survives restarts.
+1. **Service starts** — the `pimclaw-components` service boots the in-plugin components:
+   - **Task Status Recorder** — initializes first, recovers persisted tasks and marks stale ones expired (including `planning` tasks >10 min → expired)
+   - **AnomalyReceiver** — validates incoming anomaly events from the LLM Head Agent, triggers PlannerTrigger per event
+   - **Scheduler** — polls for ready tasks every 5 s, creates Workers (up to 10 concurrent)
+2. **Tools appear** — ten tools become available to every OpenClaw agent session (see table below)
+3. **LLM agents run externally** — the Head Agent (cron `*/5 * * * *`) and Planner Agent (on-demand) run via OpenClaw's agent runtime, not inside the plugin. They interact through two integration gates: `pimclaw_submit_anomalies` and `pimclaw_plan_task`.
+4. **Service stops** — when OpenClaw shuts down, components are stopped in reverse order, fallback timers are cleared, and task state is persisted
+
+All task data is stored in OpenClaw's `stateDir` so it survives restarts. LLM agent sessions are managed by OpenClaw's agent runtime.
 
 ---
 
@@ -59,7 +62,7 @@ docker exec openclaw-container openclaw plugin add --link /tmp/pimclaw
 docker exec openclaw-container openclaw plugin enable pimclaw
 ```
 
-After installation, restart or reload OpenClaw — the plugin service starts automatically.
+After installation, restart or reload OpenClaw — the plugin service starts automatically and the LLM agents begin their cron schedules.
 
 ---
 
@@ -73,19 +76,26 @@ After installation, restart or reload OpenClaw — the plugin service starts aut
 │  │  PimClaw Plugin  (definePluginEntry)                 │    │
 │  │                                                     │    │
 │  │  ┌───────────────────────────────────────────────┐  │    │
-│  │  │  Service: pimclaw-agents                      │  │    │
+│  │  │  Service: pimclaw-components                  │  │    │
 │  │  │                                               │  │    │
 │  │  │   start(ctx) ──► TaskStatusRecorder           │  │    │
 │  │  │                    ↓                          │  │    │
-│  │  │                 SchedulerAgent.run()           │  │    │
+│  │  │                 AnomalyReceiver               │  │    │
+│  │  │                   (+ PlannerTrigger)           │  │    │
 │  │  │                    ↓                          │  │    │
-│  │  │                 HeadAgent.run()                │  │    │
+│  │  │                 Scheduler.run()                │  │    │
+│  │  │                    ↓                          │  │    │
+│  │  │                 Workers (ephemeral)            │  │    │
 │  │  │                                               │  │    │
-│  │  │   stop(ctx)  ──► Head → Scheduler → persist   │  │    │
+│  │  │   stop(ctx)  ──► Scheduler → timers → persist │  │    │
 │  │  └───────────────────────────────────────────────┘  │    │
 │  │                                                     │    │
-│  │  Tools: pimclaw_route_task, pimclaw_health, …       │    │
+│  │  Tools: pimclaw_submit_anomalies, pimclaw_health, … │    │
 │  └─────────────────────────────────────────────────────┘    │
+│                                                             │
+│  LLM Agent Runtime (external to plugin)                     │
+│    [pimclaw-head]     cron */5 min → pimclaw_submit_anomalies│
+│    [pimclaw-planner]  on-demand    → pimclaw_plan_task       │
 │                                                             │
 │  Agent Sessions                                             │
 │    "Check PimClaw health"  ──► calls pimclaw_health tool    │
@@ -103,7 +113,7 @@ export default definePluginEntry({
   description: 'LLM deployment orchestration …',
 
   register(api) {
-    api.registerService(createPimClawService());  // boots agents
+    api.registerService(createPimClawService());  // boots components
 
     for (const toolFactory of buildPimClawTools()) {
       api.registerTool(toolFactory);              // exposes tools
@@ -116,8 +126,8 @@ export default definePluginEntry({
 
 | Phase   | What happens                                                   |
 |---------|----------------------------------------------------------------|
-| `start` | Creates `AgentRegistry`, initializes `TaskStatusRecorder` (reads `stateDir/pimclaw-tasks/tasks.json`), starts `SchedulerAgent.run()`, starts `HeadAgent.run()` |
-| `stop`  | Calls `head.shutdown()` → `scheduler.shutdown()` → `taskRecorder.persist()` |
+| `start` | Creates `ComponentRegistry`, initializes `TaskStatusRecorder` (reads `stateDir/pimclaw-tasks/tasks.json`), creates `PlannerTrigger` + `AnomalyReceiver` with fallback hooks, starts `Scheduler.run()` |
+| `stop`  | Calls `scheduler.shutdown()` → clears planning fallback timers → `taskRecorder.persist()` |
 
 Data is persisted under `ctx.stateDir`:
 
@@ -125,8 +135,6 @@ Data is persisted under `ctx.stateDir`:
 <stateDir>/
   pimclaw-tasks/
     tasks.json          # task state
-  pimclaw-head-data/
-    snapshots.json      # last N metric snapshots
 ```
 
 ---
@@ -137,9 +145,11 @@ Once the plugin is active, any OpenClaw agent can call these tools:
 
 | Tool | Purpose | Key Parameters |
 |------|---------|----------------|
-| `pimclaw_route_task` | Submit a task to the Scheduler | `llmDeploymentName`, `taskType`, `priority?`, `taskData?` |
-| `pimclaw_list_agents` | List active PimClaw agents | `agentType?` |
-| `pimclaw_agent_status` | Detailed status of one agent | `agentId` |
+| `pimclaw_submit_anomalies` | Submit detected anomaly events (Head Agent → Plugin) | `events[]` |
+| `pimclaw_plan_task` | Submit deployment config plan (Planner Agent → Plugin) | `taskId`, `taskType`, `config`, `reasoning` |
+| `pimclaw_route_task` | Submit a task directly (bypasses Head/Planner) | `llmDeploymentName`, `taskType`, `priority?`, `taskData?` |
+| `pimclaw_list_components` | List active PimClaw components | `componentType?` |
+| `pimclaw_component_status` | Detailed status of one component | `componentId` |
 | `pimclaw_health` | System-wide health report | — |
 | `pimclaw_task_counts` | Task counts by status | — |
 | `pimclaw_list_tasks` | List tasks (optionally filtered) | `status?`, `limit?` |
@@ -152,7 +162,7 @@ Once the plugin is active, any OpenClaw agent can call these tools:
 
 ### Route a task
 
-The primary interaction — tell PimClaw to do something with a deployment:
+The direct interaction — tell PimClaw to do something with a deployment (bypasses the LLM Head/Planner flow):
 
 ```
 You: Scale up the gpt-4-prod deployment to handle the traffic spike.
@@ -161,13 +171,33 @@ Agent: I'll submit that to PimClaw.
        ← { success: true, taskId: "a1b2c3…", message: "Task routed to scheduler for gpt-4-prod" }
 ```
 
+### The automated flow (LLM Head → Planner → Execution)
+
+Most tasks are created automatically by the LLM Head Agent and planned by the Planner. The flow is:
+
+```
+[LLM Head Agent]  detects TTFT spike
+  → pimclaw_submit_anomalies({ events: [{ type: "spike", metricName: "ttft", ... }] })
+  ← { success: true, accepted: 1, tasks: [{ taskId: "x1y2" }] }
+
+[Plugin]  creates task in "planning" state → triggers Planner Agent
+
+[LLM Planner Agent]  analyzes via Perf MCP + Simulator MCP
+  → pimclaw_plan_task({ taskId: "x1y2", taskType: "scale-up", config: { replicas: 3 }, reasoning: "..." })
+  ← { success: true, taskId: "x1y2", message: "Task planned and ready for scheduling" }
+
+[Plugin]  transitions task planning → ready → Scheduler picks up → Worker executes
+```
+
+If the Planner times out or fails, the plugin automatically applies a fallback plan (default: scale-up by 1 replica).
+
 ### Check health
 
 ```
 You: How is PimClaw doing?
 Agent: → pimclaw_health()
-       ← { totalAgents: 3, healthyAgents: 3, issues: [] }
-       All three agents are healthy with no issues.
+       ← { totalAgents: 2, healthyAgents: 2, issues: [] }
+       All components are healthy with no issues.
 ```
 
 ### Monitor tasks
@@ -195,21 +225,22 @@ Agent: → pimclaw_revoke_task({ taskId: "x1y2" })
        The task has been cancelled (marked as expired).
 ```
 
-### List agents
+### List components
 
 ```
-You: Show me all PimClaw agents.
-Agent: → pimclaw_list_agents()
-       ← [{ agentId: "head-1", agentType: "head", status: "Listening" },
-          { agentId: "scheduler-1", agentType: "scheduler", status: "Listening" }]
+You: Show me all PimClaw components.
+Agent: → pimclaw_list_components()
+       ← [{ agentId: "scheduler-1", agentType: "scheduler", status: "Listening" }]
 ```
+
+> **Note:** The LLM Head and Planner Agents are NOT listed here — they run outside the plugin via OpenClaw's agent runtime. Use OpenClaw's agent/session management to inspect them.
 
 ### Get task counts
 
 ```
 You: How many tasks are queued?
 Agent: → pimclaw_task_counts()
-       ← { ready: 3, scheduling: 0, scheduled: 1, running: 2, done: 15, failed: 1, expired: 0 }
+       ← { planning: 1, ready: 3, scheduling: 0, scheduled: 1, running: 2, done: 15, failed: 1, expired: 0 }
 ```
 
 ---
@@ -225,13 +256,34 @@ The `openclaw.plugin.json` file declares the plugin identity, config schema, and
   "configSchema": {
     "type": "object",
     "additionalProperties": false,
-    "properties": {}
+    "properties": {
+      "anomalyReceiver": {
+        "type": "object",
+        "properties": {
+          "maxEventsPerSubmission": { "type": "number", "default": 20 },
+          "deduplicationWindowMs": { "type": "number", "default": 600000 },
+          "planningTimeoutMs": { "type": "number", "default": 600000 },
+          "allowedMetrics": { "type": "array", "items": { "type": "string" } }
+        }
+      },
+      "planner": {
+        "type": "object",
+        "properties": {
+          "agentId": { "type": "string", "default": "pimclaw-planner" },
+          "timeoutSeconds": { "type": "number", "default": 600 },
+          "fallbackTaskType": { "type": "string", "default": "scale-up" },
+          "fallbackConfig": { "type": "object" }
+        }
+      }
+    }
   },
   "contracts": {
     "tools": [
+      "pimclaw_submit_anomalies",
+      "pimclaw_plan_task",
       "pimclaw_route_task",
-      "pimclaw_list_agents",
-      "pimclaw_agent_status",
+      "pimclaw_list_components",
+      "pimclaw_component_status",
       "pimclaw_health",
       "pimclaw_task_counts",
       "pimclaw_list_tasks",
@@ -261,36 +313,59 @@ The `package.json` includes OpenClaw compatibility metadata:
 
 ## Configuration
 
-The Head Agent connects to three external MCP services at startup.  
-By default the connection commands are hardcoded in the `HeadAgent` constructor:
+### Plugin Configuration
 
-| MCP Service | Default Command | Purpose |
-|-------------|-----------------|----------|
-| `grafana` | `node path/to/grafana-mcp-server.js` | Collect LLM deployment metrics |
-| `perf` | `node path/to/perf-mcp-server.js` | Performance benchmarking data |
-| `simulator` | `python path/to/simulator-mcp-server.py` | Traffic / load simulation |
+PimClaw's plugin-level config controls the AnomalyReceiver and Planner integration. Set these in your OpenClaw config under the `pimclaw` plugin:
 
-To override these, supply a `pimclaw.config.yaml` (see [design docs](./design.md) for the full schema):
+| Setting | Default | Purpose |
+|---------|---------|---------|
+| `anomalyReceiver.maxEventsPerSubmission` | 20 | Max events per `pimclaw_submit_anomalies` call |
+| `anomalyReceiver.deduplicationWindowMs` | 600000 (10 min) | Ignore duplicate metric+deployment events within this window |
+| `anomalyReceiver.planningTimeoutMs` | 600000 (10 min) | How long to wait for Planner before applying fallback |
+| `anomalyReceiver.allowedMetrics` | `["ttft", "tpot", "qps", "throughput", "gpu_utilization", "error_rate"]` | Accepted metric names |
+| `planner.agentId` | `pimclaw-planner` | OpenClaw agent ID for the Planner |
+| `planner.timeoutSeconds` | 600 | Planner agent run timeout |
+| `planner.fallbackTaskType` | `scale-up` | Task type used when Planner fails/times out |
+| `planner.fallbackConfig` | `{ "replicaDelta": 1 }` | Config applied when Planner fails/times out |
+
+### LLM Agent Configuration
+
+The Head and Planner agents are configured via OpenClaw's agent config, not the plugin config. See `AGENTS.md` for full definitions.
+
+```json
+{
+  "agents": {
+    "agentConfigs": {
+      "pimclaw-head": {
+        "model": "minimax-m2_1",
+        "thinking": "disabled",
+        "subagents": { "maxDepth": 0 }
+      },
+      "pimclaw-planner": {
+        "model": "minimax-m2_1",
+        "thinking": "enabled",
+        "subagents": { "maxDepth": 0 }
+      }
+    }
+  }
+}
+```
+
+### Optional: Scheduler/Component Configuration
+
+To override Scheduler and component settings, supply a `pimclaw.config.yaml`:
 
 ```yaml
 version: "1.0"
 agents:
-  head:
-    snapshotInterval: 300000      # observe-think-decide cycle (ms)
   scheduler:
     maxConcurrentWorkers: 10
     pollingIntervalMs: 5000
 mcp:
   services:
-    grafana:
+    engine:
       command: node
-      args: [/opt/mcp/grafana-mcp-server.js]
-    perf:
-      command: node
-      args: [/opt/mcp/perf-mcp-server.js]
-    simulator:
-      command: python3
-      args: [/opt/mcp/simulator-mcp-server.py]
+      args: [/opt/mcp/engine-mcp-server.js]
 storage:
   path: ./pimclaw-data
   type: file
@@ -300,8 +375,6 @@ logging:
 ```
 
 Environment variable substitution is supported in YAML values using `${VAR_NAME}` syntax.
-
-> **Note:** If the MCP services are not available at startup, the Head Agent logs connection errors and continues running — it will use mock / fallback metrics until real services are connected.
 
 ---
 
@@ -321,27 +394,41 @@ docker exec openclaw-container openclaw plugin list
 docker exec openclaw-container openclaw plugin enable pimclaw
 ```
 
-### Agents not starting
+### Components not starting
 
 Check the OpenClaw logs for `[PimClaw]` messages:
 
 ```
-[PimClaw] Starting agents…
-[PimClaw] All agents started (TaskRecorder → Scheduler → Head)
+[PimClaw] Starting components…
+[PimClaw] Components started (TaskRecorder → AnomalyReceiver → Scheduler)
 ```
 
-If you see `[PimClaw] Scheduler error:` or `[PimClaw] Head error:`, the MCP services may not be reachable.  
-The agents will still run — MCP connection failures are caught and logged, and the Head Agent falls back to mock metrics.
+If you see `[PimClaw] Scheduler error:`, the Engine MCP service may not be reachable. The Scheduler will still run — MCP connection failures are caught and logged.
+
+### LLM Head Agent not detecting anomalies
+
+The Head Agent runs externally via OpenClaw's agent runtime. Check:
+- OpenClaw cron is configured for `pimclaw-head` at `*/5 * * * *`
+- The Grafana MCP service is accessible from the agent's tool list
+- The `pimclaw-head-session` session exists and is accumulating turns
+- The agent can call `pimclaw_submit_anomalies` and `pimclaw_task_counts`
+
+### Tasks stuck in "planning"
+
+Planning tasks that exceed `planningTimeoutMs` (default 10 min) are automatically promoted to `ready` with the fallback config. If tasks still get stuck:
+- Check the Planner agent logs in OpenClaw
+- Verify `pimclaw-planner` agent is correctly configured
+- On restart, the TaskStatusRecorder expires `planning` tasks >10 min
 
 ### Tools return "PimClaw service not running"
 
-This means the `pimclaw-agents` service failed to start or hasn't started yet.  
+This means the `pimclaw-components` service failed to start or hasn't started yet.  
 Verify the manifest lists the tools in `contracts.tools` and that the service lifecycle completed without errors.
 
 ### Tasks stuck in "scheduling"
 
 The Scheduler marks tasks stuck in `scheduling` for > 60 s as `expired`.  
-If tasks keep expiring, check Worker Agent creation and MCP service connectivity.
+If tasks keep expiring, check Worker creation and Engine MCP service connectivity.
 
 ---
 
@@ -349,8 +436,11 @@ If tasks keep expiring, check Worker Agent creation and MCP service connectivity
 
 | Component | Role | Lifecycle |
 |-----------|------|-----------|
-| **AgentRegistry** | In-memory status of all agents, health monitoring, event emission | Created on service `start`, dropped on `stop` |
-| **TaskStatusRecorder** | Persistent task state machine (JSON file in `stateDir`) | Initialized on `start`, flushed on `stop` |
-| **SchedulerAgent** | Polls ready tasks, enforces concurrency (max 10 workers), creates Workers | `run()` on `start`, `shutdown()` on `stop` |
-| **HeadAgent** | Observe-Think-Decide loop every 5 min — collects metrics, detects anomalies, plans tasks | `run()` on `start`, `shutdown()` on `stop` |
-| **WorkerAgent** | Ephemeral — executes a single task via Engine MCP, then disposes | Created by Scheduler per task |
+| **ComponentRegistry** | In-memory status of all PimClaw components, health monitoring, event emission | Created on service `start`, dropped on `stop` |
+| **TaskStatusRecorder** | Persistent task state machine (JSON file in `stateDir`), 8-state lifecycle including `planning` | Initialized on `start`, flushed on `stop` |
+| **AnomalyReceiver** | Validates incoming anomaly events, deduplicates, rate-limits, triggers PlannerTrigger | Created on `start`, dropped on `stop` |
+| **PlannerTrigger** | Spawns LLM Planner agent via OpenClaw API per anomaly event | Created on `start`, dropped on `stop` |
+| **Scheduler** | Polls for ready tasks, enforces concurrency (max 10 workers), creates Workers | `run()` on `start`, `shutdown()` on `stop` |
+| **Worker** | Ephemeral — executes a single task via Engine MCP, then disposes | Created by Scheduler per task |
+| **LLM Head Agent** | Cron-triggered (*/5 min), detects anomalies via Grafana, calls `pimclaw_submit_anomalies` | Managed by OpenClaw agent runtime (external) |
+| **LLM Planner Agent** | On-demand, plans deployment configs using Perf/Simulator MCP, calls `pimclaw_plan_task` | Managed by OpenClaw agent runtime (external) |

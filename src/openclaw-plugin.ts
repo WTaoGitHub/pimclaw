@@ -35,6 +35,50 @@ let registry: ComponentRegistry | null = null;
 let taskRecorder: TaskStatusRecorder | null = null;
 let scheduler: SchedulerAgent | null = null;
 let anomalyReceiver: AnomalyReceiver | null = null;
+let plannerFallbackTaskType: 'scale-up' | 'scale-down' | 'restart' | 'reconfigure' = 'scale-up';
+let plannerFallbackConfig: Record<string, unknown> = { replicaDelta: 1 };
+let planningTimeoutMs = 600_000;
+let pluginLogger: OpenClawPluginServiceContext['logger'] | null = null;
+const planningFallbackTimers: Map<string, ReturnType<typeof setTimeout>> = new Map();
+
+function clearPlanningFallback(taskId: string): void {
+  const timer = planningFallbackTimers.get(taskId);
+  if (timer) {
+    clearTimeout(timer);
+    planningFallbackTimers.delete(taskId);
+  }
+}
+
+async function applyFallbackPlan(taskId: string, reason: string): Promise<boolean> {
+  if (!taskRecorder) {
+    return false;
+  }
+
+  const task = taskRecorder.getTask(taskId);
+  if (!task || task.status !== 'planning') {
+    return false;
+  }
+
+  task.taskType = plannerFallbackTaskType;
+  task.config = { ...plannerFallbackConfig };
+  task.reasoning = `Fallback plan applied: ${reason}`;
+  task.perfEvidence = 'Fallback mode: Planner timed out or failed before submitting plan';
+  task.simulationResults = 'No simulation available in fallback mode';
+
+  await taskRecorder.updateTaskStatus(taskId, 'ready');
+  clearPlanningFallback(taskId);
+  pluginLogger?.warn(`[PimClaw] Applied fallback plan to task ${taskId}: ${reason}`);
+
+  return true;
+}
+
+function schedulePlanningFallback(taskId: string): void {
+  clearPlanningFallback(taskId);
+  const timer = setTimeout(() => {
+    void applyFallbackPlan(taskId, `planner timeout after ${planningTimeoutMs}ms`);
+  }, planningTimeoutMs);
+  planningFallbackTimers.set(taskId, timer);
+}
 
 // ─── Service: lifecycle-managed PimClaw components ─────────────────────────
 
@@ -44,6 +88,7 @@ function createPimClawService(): OpenClawPluginService {
 
     async start(ctx: OpenClawPluginServiceContext) {
       ctx.logger.info('[PimClaw] Starting components…');
+      pluginLogger = ctx.logger;
 
       // 1. Shared infrastructure
       registry = new ComponentRegistry();
@@ -54,6 +99,8 @@ function createPimClawService(): OpenClawPluginService {
 
       // 2. PlannerTrigger — spawns Planner agent via OpenClaw API
       const plannerConfig = (ctx.config as any)?.planner ?? {};
+      plannerFallbackTaskType = plannerConfig.fallbackTaskType ?? 'scale-up';
+      plannerFallbackConfig = plannerConfig.fallbackConfig ?? { replicaDelta: 1 };
       const openclawApi = (ctx as any).openclawApi ?? {
         triggerAgent: async () => {
           ctx.logger.warn('[PimClaw] OpenClaw agent API not available — Planner trigger is a no-op');
@@ -66,7 +113,21 @@ function createPimClawService(): OpenClawPluginService {
 
       // 3. AnomalyReceiver — validates events from LLM Head, triggers Planner
       const receiverConfig = (ctx.config as any)?.anomalyReceiver ?? {};
-      anomalyReceiver = new AnomalyReceiver(taskRecorder, plannerTrigger, receiverConfig);
+      planningTimeoutMs = receiverConfig.planningTimeoutMs ?? 600_000;
+      anomalyReceiver = new AnomalyReceiver(
+        taskRecorder,
+        plannerTrigger,
+        receiverConfig,
+        {
+          onPlanningTaskCreated: async (taskId) => {
+            schedulePlanningFallback(taskId);
+          },
+          onPlannerTriggerFailed: async (taskId, _event, error) => {
+            const message = error instanceof Error ? error.message : String(error);
+            await applyFallbackPlan(taskId, `planner trigger failed: ${message}`);
+          },
+        },
+      );
 
       // 4. Scheduler — polls for ready tasks, spawns Workers
       scheduler = new SchedulerAgent(registry, taskRecorder);
@@ -88,11 +149,15 @@ function createPimClawService(): OpenClawPluginService {
         scheduler = null;
       }
       anomalyReceiver = null;
+      for (const taskId of planningFallbackTimers.keys()) {
+        clearPlanningFallback(taskId);
+      }
       if (taskRecorder) {
         await taskRecorder.persist();
         taskRecorder = null;
       }
       registry = null;
+      pluginLogger = null;
 
       ctx.logger.info('[PimClaw] All components stopped');
     },
@@ -212,6 +277,8 @@ function buildPimClawTools() {
         task.reasoning = params.reasoning as string;
         task.perfEvidence = params.perfEvidence as string | undefined;
         task.simulationResults = params.simulationResults as string | undefined;
+
+        clearPlanningFallback(taskId);
 
         // Transition planning → ready
         await taskRecorder.updateTaskStatus(taskId, 'ready');

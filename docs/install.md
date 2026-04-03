@@ -46,15 +46,17 @@ pimclaw/
 │   ├── openclaw-plugin.js         # plugin entry with service + tools
 │   ├── config-manager.js          # YAML config loader
 │   ├── master/
-│   │   ├── agent-registry.js      # in-memory agent status & health
-│   │   ├── base-agent.js          # agent base class
-│   │   ├── head-agent.js          # observe-think-decide loop
+│   │   ├── component-registry.js  # in-memory component status & health
+│   │   ├── base-agent.js          # agent base class (Scheduler, Worker)
+│   │   ├── anomaly-receiver.js    # validates LLM Head events, triggers Planner
+│   │   ├── planner-trigger.js     # spawns Planner agent via OpenClaw API
 │   │   ├── scheduler-agent.js     # task polling & concurrency
 │   │   ├── task-status-recorder.js# task state machine + persistence
 │   │   ├── worker-agent.js        # ephemeral task executor
 │   │   ├── mcp-server.js          # MCP Server wrapper
 │   │   └── cli.js                 # CLI tool
 │   └── types/                     # type declarations
+├── AGENTS.md                      # LLM Head & Planner agent definitions
 ├── openclaw.plugin.json           # OpenClaw plugin manifest
 ├── package.json
 └── tsconfig.json
@@ -103,9 +105,9 @@ npm publish --registry https://npm.pkg.github.com
 
 > **Checklist before publishing:**
 > 1. `npm run build` succeeds with no errors
-> 2. `npm test` passes (34 E2E + unit tests)
+> 2. `npm test` passes (31 E2E + unit tests across 5 test files)
 > 3. Version in `package.json` is bumped (`npm version patch|minor|major`)
-> 4. `openclaw.plugin.json` contracts list matches the actual registered tools
+> 4. `openclaw.plugin.json` contracts list matches the actual registered tools (10 tools)
 
 ## Delivering to OpenClaw
 
@@ -167,7 +169,7 @@ openclaw plugin list               # pimclaw should appear
 openclaw plugin enable pimclaw     # if not enabled
 ```
 
-Once activated, the `pimclaw-agents` service starts automatically and the eight tools (`pimclaw_route_task`, `pimclaw_health`, etc.) become available to all agent sessions.
+Once activated, the `pimclaw-components` service starts automatically and the ten tools (`pimclaw_submit_anomalies`, `pimclaw_plan_task`, `pimclaw_route_task`, `pimclaw_health`, etc.) become available to all agent sessions. The LLM Head and Planner agents must also be configured in OpenClaw's agent runtime — see `AGENTS.md`.
 
 ## Compatibility
 

@@ -31,6 +31,11 @@ export interface AnomalyReceiverConfig {
   allowedMetrics: string[];
 }
 
+export interface AnomalyReceiverHooks {
+  onPlanningTaskCreated?: (taskId: string, event: ValidatedEvent) => void | Promise<void>;
+  onPlannerTriggerFailed?: (taskId: string, event: ValidatedEvent, error: unknown) => void | Promise<void>;
+}
+
 const DEFAULT_CONFIG: AnomalyReceiverConfig = {
   maxEventsPerSubmission: 20,
   deduplicationWindowMs: 600_000,
@@ -42,16 +47,19 @@ export class AnomalyReceiver {
   private taskRecorder: TaskStatusRecorder;
   private plannerTrigger: PlannerTrigger;
   private config: AnomalyReceiverConfig;
+  private hooks: AnomalyReceiverHooks;
   private recentEvents: Map<string, Date> = new Map();
 
   constructor(
     taskRecorder: TaskStatusRecorder,
     plannerTrigger: PlannerTrigger,
     config?: Partial<AnomalyReceiverConfig>,
+    hooks?: AnomalyReceiverHooks,
   ) {
     this.taskRecorder = taskRecorder;
     this.plannerTrigger = plannerTrigger;
     this.config = { ...DEFAULT_CONFIG, ...config };
+    this.hooks = hooks ?? {};
   }
 
   async receive(events: AnomalyEvent[]): Promise<ValidatedEvent[]> {
@@ -109,13 +117,13 @@ export class AnomalyReceiver {
 
       await this.taskRecorder.createTask(task);
       this.recentEvents.set(dedupKey, new Date());
+      await this.hooks.onPlanningTaskCreated?.(taskId, validatedEvent);
 
       // Trigger the Planner agent asynchronously
       this.plannerTrigger
         .trigger(validatedEvent, taskId)
-        .catch(() => {
-          // If Planner trigger fails, the task stays in 'planning' state
-          // and will be expired by the stale recovery (>10min)
+        .catch(async (error) => {
+          await this.hooks.onPlannerTriggerFailed?.(taskId, validatedEvent, error);
         });
 
       validated.push(validatedEvent);
