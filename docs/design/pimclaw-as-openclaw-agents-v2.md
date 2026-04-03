@@ -9,11 +9,12 @@
 2. [Architecture Overview](#2-architecture-overview)
 3. [What Changes](#3-what-changes)
 4. [LLM Head Agent Design](#4-llm-head-agent-design)
-5. [Programmatic Components (Unchanged)](#5-programmatic-components-unchanged)
-6. [Integration Boundary](#6-integration-boundary)
-7. [Implementation Plan](#7-implementation-plan)
-8. [Configuration](#8-configuration)
-9. [Cost & Risk Analysis](#9-cost--risk-analysis)
+5. [LLM Planner Agent Design](#5-llm-planner-agent-design)
+6. [PimClaw Components (Unchanged)](#6-pimclaw-components-unchanged)
+7. [Integration Boundary](#7-integration-boundary)
+8. [Implementation Plan](#8-implementation-plan)
+9. [Configuration](#9-configuration)
+10. [Cost & Risk Analysis](#10-cost--risk-analysis)
 
 ---
 
@@ -27,10 +28,15 @@ Convert Head, Scheduler, and Workers to LLM agents. Keep only the Recorder as a 
 
 ### v2 Approach (Adopted)
 
-Replace **only the Head Agent's anomaly detection** with an LLM agent. Keep Scheduler, Workers, and Recorder as programmatic TypeScript code running inside the plugin.
+Replace the Head Agent with **two focused LLM agents** — a **Head** for anomaly detection and a **Planner** for configuration planning. Keep Scheduler, Workers, and Recorder as programmatic TypeScript code running inside the plugin.
 
-**Why this is better:**
-- The Head Agent's observe-think-decide loop is the **one place** where LLM reasoning adds genuine value (pattern recognition, multi-metric correlation, contextual judgment)
+**Why two agents instead of one:**
+- The Head runs **288 times/day**, most runs detect nothing — keep it cheap and focused on detection only
+- Perf MCP, Simulator MCP, and Web Search are only needed **when there's an anomaly** — the Planner only runs then
+- Detection and planning are **different reasoning tasks** — the LLM performs better when focused on one job
+- The Perf and Simulator data is the project's **sellpoint** — it deserves dedicated, careful multi-step reasoning, not a side-task in the detection cycle
+
+**What stays programmatic:**
 - The Scheduler's job is deterministic FIFO + priority sorting — an LLM would make it slower and less predictable
 - Workers execute a single MCP call — no reasoning needed
 - The Recorder is a state machine — deterministic by definition
@@ -43,24 +49,31 @@ Replace **only the Head Agent's anomaly detection** with an LLM agent. Keep Sche
 OPENCLAW PLATFORM
 │
 ├─ [LLM Agent] pimclaw-head (cron: */5 * * * *)
-│   ├─ Model: claude-sonnet
-│   ├─ Tools: Grafana MCP, pimclaw_submit_anomalies
+│   ├─ Model: configurable (default: minimax-m2_1)
+│   ├─ Tools: Grafana MCP, pimclaw_submit_anomalies, pimclaw_task_counts
 │   ├─ Session: persistent (accumulates observation history)
-│   └─ Job: Observe metrics → reason about anomalies → submit events
+│   └─ Job: Detect anomalies only
+│
+├─ [LLM Agent] pimclaw-planner (triggered per anomaly)
+│   ├─ Model: configurable (default: minimax-m2_1)
+│   ├─ Tools: Perf MCP, Simulator MCP, Web Search, pimclaw_plan_task
+│   ├─ Session: ephemeral (one-shot per anomaly event)
+│   └─ Job: Determine optimal deployment config
 │
 └─ [Plugin] pimclaw
     ├─ Service (lifecycle-managed)
-    │   ├─ AnomalyReceiver  ← receives events from LLM Head
-    │   ├─ TaskPlanner       ← converts events into tasks
-    │   ├─ TaskStatusRecorder (unchanged)
-    │   ├─ SchedulerAgent    (unchanged, loop every 5s)
-    │   └─ WorkerAgents      (unchanged, ephemeral)
+    │   ├─ AnomalyReceiver   ← receives events from LLM Head
+    │   ├─ PlannerTrigger    ← spawns Planner agent per event
+    │   ├─ Task Status Recorder (unchanged, +planning state)
+    │   ├─ Scheduler           (unchanged, loop every 5s)
+    │   └─ Workers             (unchanged, ephemeral)
     │
     └─ Tools (exposed to OpenClaw agents)
         ├─ pimclaw_submit_anomalies  ← NEW: LLM Head calls this
+        ├─ pimclaw_plan_task         ← NEW: LLM Planner calls this
         ├─ pimclaw_route_task
-        ├─ pimclaw_list_agents
-        ├─ pimclaw_agent_status
+        ├─ pimclaw_list_components    ← RENAMED from pimclaw_list_agents
+        ├─ pimclaw_component_status   ← RENAMED from pimclaw_agent_status
         ├─ pimclaw_health
         ├─ pimclaw_task_counts
         ├─ pimclaw_list_tasks
@@ -71,34 +84,53 @@ OPENCLAW PLATFORM
 ### Data Flow
 
 ```
-                    LLM BOUNDARY                    PROGRAMMATIC BOUNDARY
-                    ───────────                     ─────────────────────
+              DETECTION (LLM)             PLANNING (LLM)           EXECUTION (code)
+              ──────────────              ──────────────           ────────────────
 
-Grafana MCP ──→  [LLM Head Agent]  ──→  pimclaw_submit_anomalies tool
-                  │                              │
-                  │ Reason about:                │
-                  │ - Multi-metric correlation   ▼
-                  │ - Trend detection        AnomalyReceiver
-                  │ - Seasonal patterns          │
-                  │ - Context from history       ▼
-                  │                          TaskPlanner
-                  │                          (event → task mapping,
-                  │                           deterministic rules)
-                  │                              │
-                  │                              ▼
-                  │                       TaskStatusRecorder
-                  │                          (task CRUD)
-                  │                              │
-                  │                              ▼
-                  │                        SchedulerAgent
-                  │                      (poll → assign → spawn)
-                  │                              │
-                  │                              ▼
-                  │                        WorkerAgents
-                  │                      (execute via Engine MCP)
+Grafana MCP ──→ [LLM Head Agent]
+                 │ Reason about:
+                 │ - Multi-metric correlation
+                 │ - Trend detection
+                 │ - Seasonal patterns
+                 │ - Context from history
+                 │
+                 ▼
+        pimclaw_submit_anomalies
+                 │
+                 ▼
+           AnomalyReceiver
+           (validate, dedup, rate-limit)
+                 │
+                 ▼ triggers per event
+                          [LLM Planner Agent]
+                           │  │  │
+                           │  │  └── Web Search
+                           │  │      "known solutions?"
+                           │  │
+                           │  └───── Simulator MCP
+                           │         "if config X → predicted TTFT?"
+                           │
+                           └──────── Perf MCP
+                                     "best historical config for this load?"
+                                │
+                                ▼
+                       pimclaw_plan_task
+                       { config: {...}, reasoning: "..." }
+                                │
+                                ▼
+                         Task Status Recorder
+                         planning → ready
+                                │
+                                ▼
+                            Scheduler
+                        (poll → assign → spawn)
+                                │
+                                ▼
+                             Workers
+                        (execute via Engine MCP)
 ```
 
-The LLM boundary is **narrow**: the Head Agent outputs structured anomaly events. Everything downstream is code.
+The LLM boundary has **two narrow gates**: the Head outputs anomaly events, the Planner outputs deployment configs. Everything else is code.
 
 ---
 
@@ -114,27 +146,52 @@ The LLM boundary is **narrow**: the Head Agent outputs structured anomaly events
 | **Output** | Direct `taskRecorder.createTask()` calls | Calls `pimclaw_submit_anomalies` tool with structured events |
 | **Snapshot history** | In-memory array + JSON file | OpenClaw session persistence (transcript) |
 | **Scheduling** | `setInterval` every 5 minutes | Cron `*/5 * * * *` |
+| **Config planning** | Hardcoded event→task mapping (spike→scale-up) | Delegated to Planner agent with Perf/Simulator/Web Search |
+
+### New: Planner Agent for Configuration Planning
+
+| Aspect | Before (v0) | After (v2) |
+|--------|-------------|------------|
+| **Config selection** | None — fixed mapping (spike→scale-up) | LLM reasons using historical perf data + simulation |
+| **Data sources** | None | Perf MCP (historical), Simulator MCP (predicted), Web Search |
+| **Trigger** | N/A | Spawned per anomaly event by AnomalyReceiver |
+| **Output** | N/A | Calls `pimclaw_plan_task` with concrete deployment config |
+
+### Changed: Task State Machine
+
+**Before (v0):** 7 states
+```
+ready → scheduling → scheduled → running → done/failed/expired
+```
+
+**After (v2):** 8 states (new `planning` state)
+```
+planning → ready → scheduling → scheduled → running → done/failed/expired
+```
+
+The `planning` state represents a task awaiting configuration from the Planner agent. Once the Planner calls `pimclaw_plan_task`, the task transitions to `ready` with a concrete deployment config attached.
 
 ### Unchanged: Everything Else
 
 | Component | Status |
 |-----------|--------|
-| TaskStatusRecorder | **Unchanged** — same code, same persistence |
-| SchedulerAgent | **Unchanged** — same 5s polling loop, same concurrency control |
-| WorkerAgent | **Unchanged** — same ephemeral execution, same MCP calls |
-| AgentRegistry | **Unchanged** — same EventEmitter tracking |
-| Task state machine | **Unchanged** — same 7 states, same transitions |
-| Plugin tools (7 of 8) | **Unchanged** — same interfaces |
-| Recovery logic | **Unchanged** — same stale task detection |
+| Task Status Recorder | **Unchanged** — same code, same persistence (+ `planning` state) |
+| Scheduler | **Unchanged** — same 5s polling loop, same concurrency control |
+| Worker | **Unchanged** — same ephemeral execution, same MCP calls |
+| Component Registry | **Unchanged** — same EventEmitter tracking |
+| Plugin tools (7 of 9) | **Unchanged** — same interfaces (2 renamed: `pimclaw_list_components`, `pimclaw_component_status`) |
+| Recovery logic | **Unchanged** — same stale task detection (+ `planning` >10min → expired) |
 
 ### New Components
 
 | Component | Purpose |
 |-----------|---------|
 | `pimclaw_submit_anomalies` tool | Receives structured anomaly events from the LLM Head Agent |
-| `AnomalyReceiver` | Validates and normalizes incoming events from the LLM |
-| `TaskPlanner` | Converts validated events into tasks (replaces `createTaskFromEvent`) |
-| LLM Head Agent definition | AGENTS.md config + system prompt |
+| `pimclaw_plan_task` tool | Receives deployment config from the LLM Planner Agent |
+| `AnomalyReceiver` | Validates incoming events, triggers Planner agent per event |
+| `PlannerTrigger` | Spawns Planner agent via OpenClaw API with event context |
+| LLM Head Agent definition | AGENTS.md config + system prompt (detection only) |
+| LLM Planner Agent definition | AGENTS.md config + system prompt (config planning) |
 
 ---
 
@@ -143,11 +200,10 @@ The LLM boundary is **narrow**: the Head Agent outputs structured anomaly events
 ### Agent Definition
 
 ```yaml
-# agents/pimclaw-head.md or AGENTS.md entry
 name: PimClaw Head
 agentId: pimclaw-head
-model: anthropic/claude-sonnet-4-6
-thinking: enabled
+model: minimax-m2_1                   # configurable — default model
+thinking: disabled                    # simple pattern matching, not deep reasoning
 cron: "*/5 * * * *"
 ```
 
@@ -155,6 +211,8 @@ cron: "*/5 * * * *"
 
 ```markdown
 You are PimClaw Head, a deployment monitoring agent for LLM inference services.
+Your ONLY job is anomaly detection. You do NOT plan fixes — a separate Planner
+agent handles that.
 
 ## Your Job
 
@@ -196,14 +254,16 @@ Collect from Grafana:
 
 - **Do NOT submit anomalies for normal fluctuations.** Only act on meaningful changes.
 - **Correlate metrics.** A TTFT spike with flat QPS suggests model degradation.
-  A TTFT spike with QPS spike suggests load increase. Different root causes need
-  different task types.
+  A TTFT spike with QPS spike suggests load increase. Include your correlation
+  analysis in the reasoning field — the Planner agent uses it.
 - **Consider history.** If you've seen the same spike for 3 consecutive observations
   and tasks are already pending, don't create duplicate tasks.
 - **Check task capacity first.** Call pimclaw_task_counts. If there are >50 pending
   tasks, do NOT submit new anomalies — the system is already saturated.
 - **Be specific.** Include the deployment name, actual metric values, and your
   reasoning in each anomaly event.
+- **Do NOT suggest specific configs.** That's the Planner's job. Just describe
+  what's wrong and how severe it is.
 
 ## Output Format
 
@@ -217,8 +277,7 @@ Call pimclaw_submit_anomalies with an array of events:
       "previousValue": <number>,
       "severity": "high" | "medium" | "low",
       "deploymentName": "<deployment identifier>",
-      "suggestedAction": "scale-up" | "scale-down" | "restart" | "investigate",
-      "reasoning": "<your analysis of why this is an anomaly>"
+      "reasoning": "<your analysis of what's happening and why>"
     }
   ]
 }
@@ -226,27 +285,17 @@ Call pimclaw_submit_anomalies with an array of events:
 If no anomalies are detected, say so briefly. Do NOT call the tool with empty events.
 ```
 
-### Why LLM Excels Here
+### Why a Cheap Model Is Sufficient for Detection
 
-The current Head Agent uses two fixed rules:
+Detection is **pattern matching with context** — not deep multi-step reasoning:
+- Compare two sets of numbers (current vs. previous metrics)
+- Apply threshold rules from the prompt
+- Check for multi-metric correlations (e.g., TTFT + QPS)
+- Decide whether to flag or ignore
 
-```typescript
-// Current: rigid, misses nuance
-if (percentChange > 200) → spike
-if (currTTFT < prevTTFT * 0.5) → drop
-```
+A cost-efficient model handles this well. The **Planner** is where reasoning quality matters — it can be configured to a higher-tier model if needed.
 
-The LLM Head Agent can:
-
-1. **Correlate metrics:** "TTFT spiked 180% but QPS also doubled — this is load-driven, not degradation. Suggest scale-up, not restart."
-
-2. **Detect trends:** "TTFT has increased 20% each of the last 4 observations. It's not a spike yet, but the trend suggests imminent saturation."
-
-3. **Avoid false positives:** "TTFT dropped from 300ms to 100ms, but that's because QPS dropped to near-zero — it's off-peak hours, not over-provisioning."
-
-4. **Provide reasoning:** Every anomaly includes human-readable analysis of *why* it was flagged, improving operator trust and debuggability.
-
-5. **Handle novel patterns:** Combinations of metrics that weren't anticipated in hardcoded rules.
+Both Head and Planner models are configurable (default: `minimax-m2_1`). See [Section 9: Configuration](#9-configuration) for details.
 
 ### Session Persistence for Observation History
 
@@ -263,49 +312,206 @@ The LLM naturally accumulates context. OpenClaw's auto-compaction handles contex
 
 ---
 
-## 5. Programmatic Components (Unchanged)
+## 5. LLM Planner Agent Design
 
-### TaskStatusRecorder
+### Agent Definition
 
-No changes. Remains a plugin service managing:
+```yaml
+name: PimClaw Planner
+agentId: pimclaw-planner
+model: minimax-m2_1                   # configurable — default model
+thinking: enabled                      # multi-step config analysis
+```
+
+The Planner is **not cron-triggered**. It's spawned on-demand by the plugin's `PlannerTrigger` when a validated anomaly event arrives.
+
+### System Prompt
+
+```markdown
+You are PimClaw Planner, a deployment configuration specialist for LLM inference
+services. You receive anomaly events and determine the optimal deployment
+configuration to resolve them.
+
+## Your Job
+
+You receive an anomaly event describing a performance issue with a specific
+LLM deployment. Your task:
+
+1. Understand the anomaly (type, severity, metric values, Head Agent's reasoning)
+2. Query historical performance data (Perf MCP) for similar load patterns
+3. Simulate candidate configurations (Simulator MCP) to predict outcomes
+4. Optionally search for known solutions (Web Search)
+5. Submit the optimal deployment config via the pimclaw_plan_task tool
+
+## Available Data Sources
+
+### Perf MCP — Historical Performance Data
+Query past deployment configurations and their measured performance:
+- What config ran well under similar QPS/load?
+- What TTFT/TPOT did we achieve with N replicas, dtype X, quantization Y?
+- What's the best-performing config for model Z on device type D?
+
+Use this to identify **candidate configurations** based on proven results.
+
+### Simulator MCP — Performance Simulation
+Simulate how a configuration would perform under given conditions:
+- "If we scale to 4 replicas with FP16, what TTFT do we expect at 200 QPS?"
+- "If we switch from FP16 to INT8, how does throughput change?"
+- "What's the minimum replica count to sustain 500 QPS under 200ms TTFT?"
+
+Use this to **validate and compare candidates** before committing.
+
+### Web Search — Known Issues & Solutions
+Search for known issues, best practices, or vendor advisories:
+- Model-specific performance quirks
+- GPU/driver compatibility issues
+- Community-reported solutions for similar symptoms
+
+Use this **sparingly** — only when Perf and Simulator data is insufficient.
+
+## Planning Workflow
+
+1. **Analyze the anomaly.** Read the event type, severity, metric values, and
+   the Head Agent's reasoning (correlation analysis).
+
+2. **Query Perf MCP.** Find historical configs that performed well under similar
+   conditions. Identify 2-3 candidate configurations.
+
+3. **Simulate candidates.** Run each candidate through Simulator MCP with the
+   current load parameters. Compare predicted TTFT, TPOT, throughput.
+
+4. **Select the best config.** Choose the candidate with the best predicted
+   performance that also has historical validation.
+
+5. **Submit the plan.** Call pimclaw_plan_task with the selected configuration,
+   including your reasoning and the simulation results that justify it.
+
+## Output Format
+
+Call pimclaw_plan_task:
+{
+  "taskId": "<taskId from the anomaly event>",
+  "taskType": "scale-up" | "scale-down" | "restart" | "reconfigure",
+  "config": {
+    "replicas": <number>,
+    "dtype": "fp16" | "bf16" | "fp8" | "int8" | "int4",
+    "quantization": "<method or null>",
+    "maxBatchSize": <number>,
+    "tensorParallelism": <number>,
+    // ... any deployment-specific parameters
+  },
+  "reasoning": "<why this config was selected>",
+  "perfEvidence": "<summary of historical perf data that supports this choice>",
+  "simulationResults": "<summary of simulation predictions>"
+}
+
+## Important Rules
+
+- **Always query Perf MCP first.** Don't guess configurations — use data.
+- **Always simulate before submitting.** Don't deploy unvalidated configs.
+- **Prefer conservative changes.** Scale up by the minimum needed, not the maximum
+  possible. Over-provisioning wastes resources.
+- **Include evidence.** The reasoning, perfEvidence, and simulationResults fields
+  are required — operators need to understand why this config was chosen.
+- **Fail gracefully.** If Perf or Simulator MCP is unavailable, fall back to a
+  safe default action (scale-up by 1 replica for spikes, no change for drops)
+  and note the degraded planning in your reasoning.
+```
+
+### Why the Planner Exists Separately
+
+**Detection and planning are different cognitive tasks:**
+
+| Head Agent (Detection) | Planner Agent (Configuration) |
+|----------------------|-------------------------------|
+| "TTFT spiked 300%" | "Historical data shows 4 replicas handle this load at 150ms TTFT" |
+| Simple pattern match | Multi-step data gathering + comparison |
+| Runs 288×/day, mostly no-ops | Runs only when anomalies exist (2-10×/day) |
+| Configurable model (default: minimax-m2_1) | Configurable model (default: minimax-m2_1) |
+| Stateless per observation | Stateless per event (ephemeral session) |
+
+**The sellpoint gets dedicated attention:** The Perf and Simulator data is the project's differentiator. A dedicated Planner can:
+
+1. **Multi-step tool use:** Query Perf → pick candidates → simulate each → compare → select best
+2. **Justify decisions:** Every planned config comes with historical evidence and simulation predictions
+3. **Adapt per anomaly:** A TTFT spike needs different reasoning than GPU under-utilization
+4. **Iterate:** If the first simulation shows poor results, try a different candidate
+
+This kind of careful, multi-step reasoning would be lost if squeezed into the tail of a detection cycle.
+
+### Example Planner Reasoning
+
+```
+Anomaly: TTFT spike 300% on deployment "llama-70b-prod" (150ms → 450ms)
+Head's analysis: "QPS also increased 80% — load-driven, not degradation"
+
+Step 1: Query Perf MCP
+  → "llama-70b-prod with 2 replicas handled 180 QPS at 140ms TTFT last week"
+  → "llama-70b-prod with 4 replicas handled 350 QPS at 120ms TTFT two weeks ago"
+  → Current: 2 replicas at 290 QPS
+
+Step 2: Simulate candidates
+  → 3 replicas at 290 QPS: predicted TTFT 190ms ✓
+  → 4 replicas at 290 QPS: predicted TTFT 130ms ✓✓
+  → 3 replicas with INT8 at 290 QPS: predicted TTFT 160ms ✓
+
+Step 3: Select
+  → 3 replicas at predicted 190ms (below 200ms threshold)
+  → Conservative: minimum change that resolves the anomaly
+  → Historical validation: 2 replicas handled 180 QPS, so 3 should handle 290 QPS
+
+Plan: scale-up to 3 replicas, keep FP16, keep current batch size
+```
+
+---
+
+## 6. PimClaw Components (Unchanged)
+
+The Scheduler, Task Status Recorder, and Workers are collectively referred to as **PimClaw Components**. They are programmatic TypeScript code running inside the plugin — not LLM agents.
+
+### Task Status Recorder
+
+Minor addition. Remains a plugin component managing:
 - Task CRUD operations
-- 7-state machine enforcement (ready → scheduling → scheduled → running → done/failed/expired)
+- **8-state** machine enforcement (planning → ready → scheduling → scheduled → running → done/failed/expired)
 - JSON persistence to `{stateDir}/pimclaw-tasks/tasks.json`
-- Stale task recovery on startup
+- Stale task recovery on startup (+ `planning` >10min → expired)
 
-### SchedulerAgent
+### Scheduler
 
 No changes. Remains a programmatic polling loop:
 - Polls every 5 seconds for `ready` tasks
 - Enforces `maxConcurrentWorkers` (default 10)
 - Transitions: ready → scheduling → scheduled
-- Spawns ephemeral WorkerAgents
+- Spawns ephemeral Workers
 - Handles completion/failure callbacks from Workers
 - Retry logic for failed tasks with remaining retries
 
-### WorkerAgent
+### Worker
 
 No changes. Remains ephemeral:
 - Created by Scheduler with a single Task
 - Connects to Engine MCP service
 - Executes `execute_deployment_change` tool call
-- Reports result/error to TaskStatusRecorder
+- Reports result/error to Task Status Recorder
 - Cleanup in `finally` block (deterministic)
 - Honors 30-minute execution timeout
 
-### AgentRegistry
+### Component Registry
 
-No changes. EventEmitter-based in-memory status tracking for all programmatic agents.
+No changes. EventEmitter-based in-memory status tracking for all PimClaw components.
 
-**Note:** The LLM Head Agent is NOT tracked in the AgentRegistry — it runs outside the plugin's process, scheduled by OpenClaw's cron system. Its status is visible via OpenClaw's session/agent management instead.
+**Note:** The LLM Head and Planner Agents are NOT tracked in the Component Registry — they run outside the plugin's process, managed by OpenClaw's agent runtime. Their status is visible via OpenClaw's session/agent management instead.
 
 ---
 
-## 6. Integration Boundary
+## 7. Integration Boundary
 
-### The `pimclaw_submit_anomalies` Tool
+There are **two integration points** between the LLM agents and the programmatic system — one per agent.
 
-This is the **single integration point** between the LLM Head Agent and the programmatic system. It replaces the direct `createTaskFromEvent()` calls that the old code-based Head Agent made.
+### Gate 1: `pimclaw_submit_anomalies` Tool (Head → Plugin)
+
+Receives anomaly events from the Head Agent. Replaces the old `createTaskFromEvent()` calls.
 
 ```typescript
 // New tool: pimclaw_submit_anomalies
@@ -326,10 +532,9 @@ This is the **single integration point** between the LLM Head Agent and the prog
             previousValue: { type: 'number' },
             severity: { type: 'string', enum: ['high', 'medium', 'low'] },
             deploymentName: { type: 'string' },
-            suggestedAction: { type: 'string', enum: ['scale-up', 'scale-down', 'restart', 'investigate'] },
             reasoning: { type: 'string' },
           },
-          required: ['type', 'metricName', 'currentValue', 'severity', 'suggestedAction'],
+          required: ['type', 'metricName', 'currentValue', 'severity', 'deploymentName'],
         },
       },
     },
@@ -340,7 +545,7 @@ This is the **single integration point** between the LLM Head Agent and the prog
 
 ### AnomalyReceiver (New)
 
-Validates and sanitizes LLM output before it reaches the task system:
+Validates LLM output and triggers the Planner:
 
 ```typescript
 class AnomalyReceiver {
@@ -351,64 +556,124 @@ class AnomalyReceiver {
    * - Deduplicate against recent events (same metric + deployment within 10min)
    * - Rate-limit: max 20 events per invocation
    * - Log all received events for audit
+   *
+   * For each validated event:
+   * - Create a preliminary task in 'planning' state
+   * - Trigger PlannerTrigger to spawn the Planner agent
    */
   receive(events: AnomalyEvent[]): ValidatedEvent[]
 }
 ```
 
-This is the **LLM guardrail** — it ensures that even if the LLM produces bad output, the downstream system only processes valid, deduplicated events.
+### PlannerTrigger (New)
 
-### TaskPlanner (Refactored from HeadAgent)
-
-Deterministic mapping from validated events to tasks:
+Spawns the Planner agent per validated event:
 
 ```typescript
-class TaskPlanner {
+class PlannerTrigger {
   /**
-   * Convert validated anomaly events into tasks.
-   * Extracted from the old HeadAgent.createTaskFromEvent() — same logic.
-   *
-   * Rules:
-   * - spike → scale-up task
-   * - drop  → scale-down task
-   * - trend → scale-up task (preemptive)
-   * - anomaly → investigate task
-   * - severity maps to priority: high→high, medium→medium, low→low
+   * Spawn a Planner agent via OpenClaw API for each event.
+   * - Creates ephemeral session (one-shot, cleanup: delete)
+   * - Passes event + taskId as attachments
+   * - Sets timeout (10 minutes per planning session)
    */
-  planTasks(events: ValidatedEvent[]): Task[]
+  async trigger(event: ValidatedEvent, taskId: string): Promise<void> {
+    await openclawApi.triggerAgent('pimclaw-planner', {
+      task: `Plan optimal config for anomaly: ${event.reasoning}`,
+      mode: 'run',
+      cleanup: 'delete',
+      runTimeoutSeconds: 600,
+      attachments: [{
+        type: 'json',
+        content: JSON.stringify({ event, taskId })
+      }]
+    });
+  }
 }
 ```
 
-### Why This Boundary Matters
+### Gate 2: `pimclaw_plan_task` Tool (Planner → Plugin)
 
-The LLM Head Agent's output is **structured data** (events), not **actions** (task creation). The plugin validates, deduplicates, and converts events into tasks deterministically. This means:
+Receives deployment configuration from the Planner agent. Transitions the task from `planning` → `ready`.
 
-1. **LLM hallucination is contained.** Bad events are filtered by AnomalyReceiver. The LLM can't create invalid tasks or corrupt the task state machine.
-2. **Task creation rules stay in code.** The mapping from event type to task type is deterministic and testable.
-3. **Rate limiting is enforced.** The LLM can't flood the system with events.
-4. **Audit trail.** Every event from the LLM is logged before processing.
+```typescript
+// New tool: pimclaw_plan_task
+{
+  name: 'pimclaw_plan_task',
+  description: 'Submit a deployment configuration plan for a task in planning state. Called by the PimClaw Planner Agent after analyzing perf data and simulation results.',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      taskId: { type: 'string', description: 'The task ID to attach the plan to' },
+      taskType: { type: 'string', enum: ['scale-up', 'scale-down', 'restart', 'reconfigure'] },
+      config: {
+        type: 'object',
+        description: 'Deployment configuration to apply',
+        properties: {
+          replicas: { type: 'number' },
+          dtype: { type: 'string' },
+          quantization: { type: 'string' },
+          maxBatchSize: { type: 'number' },
+          tensorParallelism: { type: 'number' },
+        },
+      },
+      reasoning: { type: 'string', description: 'Why this config was selected' },
+      perfEvidence: { type: 'string', description: 'Historical perf data supporting this choice' },
+      simulationResults: { type: 'string', description: 'Simulation predictions for this config' },
+    },
+    required: ['taskId', 'taskType', 'config', 'reasoning'],
+  },
+}
+```
+
+### Why Two Gates Matter
+
+Each LLM agent's output is **structured data**, not **actions**. The plugin validates everything before it reaches the task system:
+
+1. **Head hallucinations are contained.** Bad events are filtered by AnomalyReceiver. The LLM can't create invalid tasks.
+2. **Planner hallucinations are contained.** `pimclaw_plan_task` validates that the taskId exists in `planning` state and the config schema is valid. Invalid plans are rejected.
+3. **Rate limiting is enforced.** The Head can't flood the system with events. The Planner can only act on existing planning-state tasks.
+4. **Audit trail.** Every event from the Head and every plan from the Planner is logged before processing.
+5. **Separation of concerns.** Detection quality ≠ planning quality. Each can be tuned independently.
 
 ---
 
-## 7. Implementation Plan
+## 8. Implementation Plan
 
-### Phase 1: Build the Integration Boundary
+### Phase 1: Extend the Task State Machine
+
+**Changed code:**
+- Add `planning` state to `TaskStatus` type
+- Update `TaskStatusRecorder` to support `planning` → `ready` transition
+- Add `planning` >10min → `expired` recovery rule to startup recovery
+- Add `config`, `reasoning`, `perfEvidence`, `simulationResults` fields to `Task` type
+- Rename `AgentRegistry` → `ComponentRegistry` in code
+
+**Tests:**
+- Task created in `planning` state
+- Valid transition: `planning` → `ready` (when plan attached)
+- Invalid transition: `planning` → `scheduling` (rejected — must go through `ready`)
+- Stale recovery: `planning` >10min → `expired`
+
+### Phase 2: Build the Integration Boundary
 
 **New code:**
-- `AnomalyReceiver` class — validation, dedup, rate limiting
-- `TaskPlanner` class — refactored from `HeadAgent.createTaskFromEvent()`
+- `AnomalyReceiver` class — validation, dedup, rate limiting, Planner triggering
+- `PlannerTrigger` class — spawns Planner agent via OpenClaw API
 - `pimclaw_submit_anomalies` tool — registered in plugin
+- `pimclaw_plan_task` tool — registered in plugin
 
-**Refactored code:**
-- Extract event→task mapping from `HeadAgent` into `TaskPlanner`
-- Wire `pimclaw_submit_anomalies` → `AnomalyReceiver` → `TaskPlanner` → `TaskStatusRecorder`
+**Wire:**
+- `pimclaw_submit_anomalies` → `AnomalyReceiver` → creates task in `planning` state → `PlannerTrigger`
+- `pimclaw_plan_task` → validates taskId + config → attaches config to task → transitions to `ready`
 
 **Tests:**
 - AnomalyReceiver: invalid events rejected, dedup works, rate limit enforced
-- TaskPlanner: event types map to correct task types and priorities
-- Integration: tool call → events → tasks in Recorder
+- PlannerTrigger: spawns agent with correct parameters
+- pimclaw_plan_task: validates taskId exists in `planning` state, rejects invalid configs
+- Integration: submit_anomalies → planning task → plan_task → ready task
 
-### Phase 2: Create LLM Head Agent
+### Phase 3: Create LLM Head Agent
 
 **New files:**
 - Agent definition (AGENTS.md entry or dedicated agent config)
@@ -418,36 +683,59 @@ The LLM Head Agent's output is **structured data** (events), not **actions** (ta
 **Validation:**
 - Run Head Agent manually → verify it calls Grafana MCP
 - Verify it calls `pimclaw_submit_anomalies` with correct event structure
-- Verify events flow through AnomalyReceiver → TaskPlanner → Recorder
-- Verify Scheduler picks up resulting tasks and spawns Workers
+- Verify AnomalyReceiver creates tasks in `planning` state
+- Verify PlannerTrigger fires
 
-### Phase 3: Remove Old Head Agent Code
+### Phase 4: Create LLM Planner Agent
 
-**After** the LLM Head Agent is validated:
+**New files:**
+- Agent definition (AGENTS.md entry or dedicated agent config)
+- System prompt (as documented in Section 5)
+
+**Validation:**
+- Trigger Planner manually with a test event
+- Verify it calls Perf MCP → Simulator MCP → pimclaw_plan_task
+- Verify task transitions from `planning` → `ready` with config attached
+- Verify Scheduler picks up `ready` task and spawns Worker with config data
+- End-to-end: Head detects anomaly → Planner plans config → Scheduler assigns → Worker deploys
+
+### Phase 5: Remove Old Head Agent Code
+
+**After** both LLM agents are validated:
 - Remove `HeadAgent` class from `src/master/head-agent.ts`
 - Remove Head Agent initialization from plugin service `start()`
 - Remove Head Agent shutdown from plugin service `stop()`
 - Remove snapshot persistence code (replaced by session persistence)
 - Keep `BaseAgent` (still used by Scheduler and Worker)
 
-### Phase 4: Cleanup
+### Phase 6: Cleanup
 
-- Update `pimclaw_list_agents` and `pimclaw_agent_status` tools to reflect that Head is now external
-- Update `pimclaw_health` to query OpenClaw agent status for Head
+- Rename `pimclaw_list_agents` → `pimclaw_list_components` and `pimclaw_agent_status` → `pimclaw_component_status` in tool registrations
+- Update `pimclaw_list_components` to list only PimClaw components (Scheduler, Task Status Recorder, Workers) — NOT the LLM agents
+- Update `pimclaw_component_status` to report component-level status (not agent sessions)
+- Update `pimclaw_health` to combine:
+  - Component health (from Component Registry) for Scheduler, Task Status Recorder, Workers
+  - LLM agent health (from OpenClaw agent API) for Head and Planner
 - Update documentation
 
 ---
 
-## 8. Configuration
+## 9. Configuration
 
-### OpenClaw Agent Config
+### OpenClaw Agent Configs
 
 ```json
 {
   "agents": {
     "agentConfigs": {
       "pimclaw-head": {
-        "model": "anthropic/claude-sonnet-4-6",
+        "model": "minimax-m2_1",
+        "thinking": "disabled",
+        "skills": [],
+        "subagents": { "maxDepth": 0 }
+      },
+      "pimclaw-planner": {
+        "model": "minimax-m2_1",
         "thinking": "enabled",
         "skills": [],
         "subagents": { "maxDepth": 0 }
@@ -457,9 +745,11 @@ The LLM Head Agent's output is **structured data** (events), not **actions** (ta
 }
 ```
 
-Note: `maxDepth: 0` — the Head Agent does **not** spawn subagents. It only calls tools. All spawning happens in the programmatic Scheduler.
+Notes:
+- Both Head and Planner default to **minimax-m2_1**. Models are configurable — swap to any supported model via the config.
+- Both have `maxDepth: 0` — neither spawns subagents. The plugin's `PlannerTrigger` spawns the Planner via OpenClaw API, not via `sessions_spawn`.
 
-### Cron Job
+### Cron Job (Head only)
 
 ```json
 {
@@ -471,67 +761,100 @@ Note: `maxDepth: 0` — the Head Agent does **not** spawn subagents. It only cal
 
 Using a fixed `sessionKey` ensures observation history accumulates in one session.
 
-### Plugin Config (pimclaw-recorder additions)
+The Planner has **no cron job** — it's triggered on-demand per anomaly event.
+
+### Plugin Config (pimclaw additions)
 
 ```json
 {
   "anomalyReceiver": {
     "maxEventsPerSubmission": 20,
     "deduplicationWindowMs": 600000,
+    "planningTimeoutMs": 600000,
     "allowedMetrics": ["ttft", "tpot", "qps", "throughput", "gpu_utilization", "error_rate"]
+  },
+  "planner": {
+    "agentId": "pimclaw-planner",
+    "timeoutSeconds": 600,
+    "fallbackTaskType": "scale-up",
+    "fallbackConfig": { "replicaDelta": 1 }
   }
 }
 ```
 
+The `fallbackConfig` is used when the Planner fails or times out — a safe default action rather than no action.
+
 ---
 
-## 9. Cost & Risk Analysis
+## 10. Cost & Risk Analysis
 
 ### Cost
 
-| Component | Inference Cost | Frequency |
-|-----------|---------------|-----------|
-| LLM Head Agent | ~$0.01–0.03 per run (sonnet, ~2K tokens) | 288 runs/day (every 5 min) |
-| **Daily total** | **~$3–9/day** | |
-| Scheduler | $0 (code) | continuous |
-| Workers | $0 (code) | on-demand |
+| Component | Inference Cost | Frequency | Daily Cost |
+|-----------|---------------|----------|------------|
+| LLM Head Agent | Model-dependent (~1K tokens/run) | 288 runs/day | Depends on model pricing |
+| LLM Planner Agent | Model-dependent (~5K tokens/run, multi-step tool use) | 2–10 runs/day (anomalies only) | Depends on model pricing |
+| Scheduler | $0 (code) | continuous | $0 |
+| Workers | $0 (code) | on-demand | $0 |
 
-**Note:** This is higher than the v1 estimate because the Head runs on sonnet with thinking enabled, and Grafana tool calls may return substantial metric data. Can be reduced by:
-- Using haiku for the Head (lower reasoning quality)
-- Running every 15min instead of 5min (3× cheaper)
-- Disabling thinking (faster, cheaper, less nuanced)
+Cost depends on the configured model. The two-agent split minimizes cost because the Planner only runs when anomalies exist.
+
+Can be reduced further by:
+- Running Head every 15min instead of 5min (3× fewer Head invocations)
+- Using a cheaper model for detection if the default proves excessive
 
 ### Risk Matrix
 
 | Risk | Severity | Likelihood | Mitigation |
 |------|----------|-----------|------------|
-| LLM hallucinates anomalies | Medium | Medium | AnomalyReceiver validates + deduplicates. TaskPlanner is deterministic. Rate limit caps event flood. |
-| LLM misses real anomalies | High | Low | Prompt includes explicit thresholds as floor. Consider keeping basic threshold checks in AnomalyReceiver as fallback. |
-| Cron fails to fire | Medium | Low | OpenClaw cron is production-grade. Add `pimclaw_health` alerting if no events received in 30min. |
-| Session context grows unbounded | Low | Medium | OpenClaw auto-compaction handles this. Set max context tokens. |
-| Grafana MCP unavailable | Medium | Low | LLM reports tool call failure. AnomalyReceiver logs gap. Same risk as current code-based Head. |
-| Cost overrun | Low | Low | Cap at sonnet. Monitor token usage via OpenClaw metrics. |
+| Head hallucinates anomalies | Medium | Medium | AnomalyReceiver validates + deduplicates. Rate limit caps event flood. Planner is a second filter — it will see the data doesn't support the anomaly. |
+| Head misses real anomalies | High | Low | Prompt includes explicit thresholds as floor. Consider keeping basic threshold checks in AnomalyReceiver as code-based fallback. |
+| Planner picks wrong config | Medium | Medium | Planner must provide perfEvidence + simulationResults. Operator can review. Config validation in `pimclaw_plan_task`. Workers execute via Engine MCP which has its own safety checks. |
+| Planner times out or fails | Medium | Low | `planningTimeoutMs: 600000` (10min). On timeout, task transitions to `ready` with `fallbackConfig`. System degrades to v0 behavior (simple scale-up) rather than stalling. |
+| Perf/Simulator MCP unavailable | Medium | Low | Planner prompt includes fallback instructions. Plugin applies `fallbackConfig` on Planner failure. |
+| Cron fails to fire | Medium | Low | OpenClaw cron is production-grade. Add `pimclaw_health` alerting if no observations in 30min. |
+| Session context grows unbounded | Low | Medium | OpenClaw auto-compaction handles this. Planner uses ephemeral sessions (no growth). |
+| Cost overrun | Low | Low | Head frequency is capped. Planner only fires on anomalies. Monitor token usage via OpenClaw metrics. |
 
 ### Fallback Strategy
 
-If the LLM Head Agent proves unreliable:
-- Re-enable the programmatic `HeadAgent` class (it's only deleted in Phase 3)
-- The integration boundary (`pimclaw_submit_anomalies` → `AnomalyReceiver` → `TaskPlanner`) remains useful even with a code-based Head — it's cleaner separation of concerns than the current monolithic `HeadAgent.observeThinkDecideCycle()`
+**If the LLM Head Agent proves unreliable:**
+- Re-enable the programmatic `HeadAgent` class (it's only deleted in Phase 5)
+- The integration boundary (`pimclaw_submit_anomalies` → `AnomalyReceiver`) works identically with a code-based Head calling the same tool
+
+**If the LLM Planner Agent proves unreliable:**
+- Configure `fallbackConfig` to always apply (bypass Planner)
+- Tasks skip `planning` state, go directly to `ready` with the fallback config
+- System degrades to v0 behavior: fixed event→task mapping
+
+**If both agents prove unreliable:**
+- The integration boundary + task state machine remains valuable refactoring
+- Re-enable both programmatic components behind the same tool interfaces
 
 ---
 
 ## Summary
 
 ```
-v0 (current):  All programmatic. Simple. Reliable. Rigid anomaly detection.
+v0 (current):   All programmatic. Simple. Reliable. Rigid anomaly detection.
+                No config intelligence — fixed spike→scale-up mapping.
 
-v1 (rejected): All LLM agents. Expensive. Non-deterministic scheduling.
-               Solves a problem that doesn't exist for Scheduler/Workers.
+v1 (rejected):  All LLM agents. Expensive. Non-deterministic scheduling.
+                Solves a problem that doesn't exist for Scheduler/Workers.
 
-v2 (adopted):  LLM Head + programmatic everything else.
-               Smart anomaly detection where it matters.
-               Deterministic execution where it matters.
-               Clean boundary with validation guardrails.
+v2 (adopted):   Two focused LLM agents + PimClaw Components.
+
+                Head Agent (configurable model, cron):
+                  → Smart anomaly detection with metric correlation
+                  → Runs 288×/day — use a cost-efficient model
+
+                Planner Agent (configurable model, on-demand):
+                  → Config planning using Perf + Simulator + Web Search
+                  → The project's sellpoint gets dedicated reasoning
+                  → Only runs when anomalies exist
+
+                PimClaw Components (Scheduler + Workers + Task Status Recorder):
+                  → Programmatic. Deterministic. Reliable. $0.
 ```
 
-**One LLM agent. One new tool. One validation layer. Maximum value, minimum risk.**
+**Two LLM agents. Two integration tools. Two validation layers. Three programmatic components. Cheap detection, smart planning, reliable execution.**
