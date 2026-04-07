@@ -28,6 +28,7 @@
         "type": "object",
         "properties": {
           "baseUrl": { "type": "string" },
+          "engine": { "type": "string", "enum": ["vllm", "sglang"], "default": "vllm" },
           "queryOverrides": { "type": "object", "additionalProperties": { "type": "string" } },
           "defaultLabels": { "type": "object", "additionalProperties": { "type": "string" } },
           "timeoutMs": { "type": "number", "default": 10000 },

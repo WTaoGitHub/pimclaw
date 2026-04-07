@@ -109,6 +109,34 @@ export const vllmPromQLMap: PrometheusQueryMap = {
 };
 
 /**
+ * Default PromQL queries mapping PimClaw metric names → SGLang Prometheus metrics.
+ * SGLang uses `sglang:` prefix and exposes inter_token_latency instead of TPOT.
+ */
+export const sglangPromQLMap: PrometheusQueryMap = {
+  ttft: 'histogram_quantile(0.95, rate(sglang:time_to_first_token_seconds_bucket[5m]))',
+  tpot: 'histogram_quantile(0.95, rate(sglang:inter_token_latency_seconds_bucket[5m]))',
+  qps: 'sum(rate(sglang:num_requests_total[5m]))',
+  throughput: 'sum(rate(sglang:generation_tokens_total[5m]))',
+  gpu_utilization: 'sglang:token_usage',
+  error_rate:
+    'sum(rate(sglang:num_aborted_requests_total[5m])) / sum(rate(sglang:num_requests_total[5m])) * 100',
+};
+
+/** Supported inference engine types for PromQL map selection. */
+export type InferenceEngine = 'vllm' | 'sglang';
+
+/** Get the PromQL map for the given inference engine. */
+export function getPromQLMap(engine: InferenceEngine): PrometheusQueryMap {
+  switch (engine) {
+    case 'sglang':
+      return sglangPromQLMap;
+    case 'vllm':
+    default:
+      return vllmPromQLMap;
+  }
+}
+
+/**
  * Inject extra label matchers into a PromQL expression.
  * Handles metrics that already have `{…}` selectors and those that don't.
  *

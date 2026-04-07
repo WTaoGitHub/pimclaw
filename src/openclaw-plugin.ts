@@ -35,8 +35,9 @@ import {
   PrometheusClient,
   vllmPromQLMap,
   injectLabels,
+  getPromQLMap,
 } from './master/prometheus-client.js';
-import type { PrometheusClientOptions } from './master/prometheus-client.js';
+import type { PrometheusClientOptions, InferenceEngine, PrometheusQueryMap } from './master/prometheus-client.js';
 import type { Task } from './types/index.js';
 import { v4 as uuidv4 } from 'uuid';
 
@@ -121,6 +122,8 @@ let anomalyReceiver: AnomalyReceiver | null = null;
 let prometheusClient: PrometheusClient | null = null;
 let prometheusQueryOverrides: Record<string, string> = {};
 let prometheusDefaultLabels: Record<string, string> = {};
+let activePromQLMap: PrometheusQueryMap = vllmPromQLMap;
+let pluginConfig: Record<string, unknown> = {};
 let pluginRuntime: unknown = null;
 let plannerFallbackTaskType: 'scale-up' | 'scale-down' | 'restart' | 'reconfigure' = 'scale-up';
 let plannerFallbackConfig: Record<string, unknown> = { replicaDelta: 1 };
@@ -129,6 +132,16 @@ let pluginLogger: OpenClawPluginServiceContext['logger'] | null = null;
 const planningFallbackTimers: Map<string, ReturnType<typeof setTimeout>> = new Map();
 const toolHooks: ToolHook[] = [];
 const execFileAsync = promisify(execFile);
+
+function getPluginConfig(ctx?: OpenClawPluginServiceContext): Record<string, unknown> {
+  const serviceConfig = ctx?.config && typeof ctx.config === 'object'
+    ? ctx.config as Record<string, unknown>
+    : {};
+  return {
+    ...pluginConfig,
+    ...serviceConfig,
+  };
+}
 
 interface PlannerSubmission {
   taskId: string;
@@ -300,6 +313,7 @@ function createPimClawService(): OpenClawPluginService {
     async start(ctx: OpenClawPluginServiceContext) {
       ctx.logger.info('[PimClaw] Starting components…');
       pluginLogger = ctx.logger;
+      const config = getPluginConfig(ctx);
 
       // 1. Shared infrastructure
       registry = new ComponentRegistry();
@@ -310,7 +324,7 @@ function createPimClawService(): OpenClawPluginService {
 
       const agentWorkspaceRoot = path.join(ctx.workspaceDir, '.pimclaw-agents');
       const headWorkspaceDir = path.join(agentWorkspaceRoot, 'head');
-      const plannerConfig = (ctx.config as any)?.planner ?? {};
+      const plannerConfig = (config as any)?.planner ?? {};
       const plannerWorkspaceDir = plannerConfig.workspaceDir ?? path.join(agentWorkspaceRoot, 'planner');
 
       await fs.mkdir(headWorkspaceDir, { recursive: true });
@@ -334,7 +348,7 @@ function createPimClawService(): OpenClawPluginService {
       );
 
       // 3. AnomalyReceiver — validates events from LLM Head, triggers Planner
-      const receiverConfig = (ctx.config as any)?.anomalyReceiver ?? {};
+      const receiverConfig = (config as any)?.anomalyReceiver ?? {};
       planningTimeoutMs = receiverConfig.planningTimeoutMs ?? 600_000;
       anomalyReceiver = new AnomalyReceiver(
         taskRecorder,
@@ -359,7 +373,7 @@ function createPimClawService(): OpenClawPluginService {
       );
 
       // 5. PrometheusClient — for pimclaw_query_metrics tool
-      const promCfg = (ctx.config as any)?.prometheus;
+      const promCfg = (config as any)?.prometheus;
       if (promCfg?.baseUrl) {
         prometheusClient = new PrometheusClient({
           baseUrl: promCfg.baseUrl,
@@ -370,7 +384,9 @@ function createPimClawService(): OpenClawPluginService {
         });
         prometheusQueryOverrides = promCfg.queryOverrides ?? {};
         prometheusDefaultLabels = promCfg.defaultLabels ?? {};
-        ctx.logger.info(`[PimClaw] Prometheus client configured → ${promCfg.baseUrl}`);
+        const engine: InferenceEngine = promCfg.engine ?? 'vllm';
+        activePromQLMap = getPromQLMap(engine);
+        ctx.logger.info(`[PimClaw] Prometheus client configured → ${promCfg.baseUrl} (engine: ${engine})`);
       } else {
         ctx.logger.warn('[PimClaw] No prometheus.baseUrl configured — pimclaw_query_metrics will be unavailable');
       }
@@ -399,6 +415,8 @@ function createPimClawService(): OpenClawPluginService {
       prometheusClient = null;
       prometheusQueryOverrides = {};
       prometheusDefaultLabels = {};
+      activePromQLMap = vllmPromQLMap;
+      pluginConfig = {};
       pluginRuntime = null;
       pluginLogger = null;
       toolHooks.length = 0;
@@ -444,7 +462,7 @@ function buildPimClawTools() {
         };
       }
 
-      const requestedMetrics = (params.metrics as string[] | undefined) ?? Object.keys(vllmPromQLMap);
+      const requestedMetrics = (params.metrics as string[] | undefined) ?? Object.keys(activePromQLMap);
       const deploymentName = params.deploymentName as string | undefined;
       const rangeMinutes = params.rangeMinutes as number | undefined;
       const nowSec = Math.floor(Date.now() / 1000);
@@ -452,8 +470,8 @@ function buildPimClawTools() {
       const results: Record<string, unknown> = {};
 
       for (const metric of requestedMetrics) {
-        // Resolve PromQL: config override > default vLLM map
-        let promql = prometheusQueryOverrides[metric] ?? vllmPromQLMap[metric];
+        // Resolve PromQL: config override > engine-specific map
+        let promql = prometheusQueryOverrides[metric] ?? activePromQLMap[metric];
         if (!promql) {
           results[metric] = { error: `Unknown metric: ${metric}` };
           continue;
@@ -817,6 +835,7 @@ export default definePluginEntry({
     'LLM deployment orchestration — monitors metrics via LLM Head Agent, plans configs via LLM Planner Agent, and executes changes via programmatic Scheduler/Workers.',
 
   register(api: OpenClawPluginApi) {
+    pluginConfig = (api.pluginConfig as Record<string, unknown> | undefined) ?? {};
     pluginRuntime = api.runtime;
     api.registerService(createPimClawService());
 
