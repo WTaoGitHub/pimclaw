@@ -16,6 +16,25 @@ In both cases, the goal is the same:
 - the PimClaw tools become available
 - the two external agents use dedicated workspaces
 
+## OpenClaw 4.1 Compatibility
+
+OpenClaw `2026.4.1` does not expose the plugin-side planner trigger API PimClaw originally
+expected in service context. PimClaw therefore supports a runtime-compatible fallback for this
+version family:
+
+- `PlannerTrigger` launches the Planner through the OpenClaw CLI
+- the Planner returns a structured JSON plan
+- the plugin applies that plan directly to the PimClaw task store
+
+This preserves the intended behavior:
+
+- the Planner is still on-demand only
+- the Planner still uses its dedicated workspace
+- planning tasks still move from `planning` to `ready`
+
+If a newer OpenClaw runtime exposes a native plugin-to-agent trigger API, PimClaw can use that
+path instead.
+
 ## Common Production Requirements
 
 Regardless of deployment style, production should use dedicated workspaces for the two PimClaw agents:
@@ -179,6 +198,7 @@ Expected result:
 - `pimclaw-head` has its own workspace
 - `pimclaw-planner` has its own workspace
 - OpenClaw health is good
+- if running on OpenClaw `2026.4.1`, PimClaw may log `Using CLI-based planner trigger fallback`
 
 ## Scenario 2: Install PimClaw Into An Existing OpenClaw Instance
 
@@ -279,6 +299,7 @@ Expected result:
 - plugin doctor reports no issues
 - both PimClaw agents have distinct workspace paths
 - health check succeeds
+- on OpenClaw `2026.4.1`, planner-triggered tasks should still reach `ready` even if the planner session itself does not expose PimClaw tools
 
 ## Operational Recommendation
 

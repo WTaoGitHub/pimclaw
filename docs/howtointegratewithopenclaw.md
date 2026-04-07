@@ -16,6 +16,11 @@ When OpenClaw activates the plugin:
 
 All task data is stored in OpenClaw's `stateDir` so it survives restarts. LLM agent sessions are managed by OpenClaw's agent runtime.
 
+On OpenClaw `2026.4.1`, PimClaw uses a compatibility fallback for planner triggering. In that
+runtime, the plugin launches the Planner through the OpenClaw CLI and accepts structured JSON
+plan output, then applies the plan inside the plugin. This is necessary because CLI-launched
+planner sessions in that build may not expose PimClaw tools directly.
+
 ---
 
 ## Installation
@@ -190,6 +195,14 @@ Most tasks are created automatically by the LLM Head Agent and planned by the Pl
 ```
 
 If the Planner times out or fails, the plugin automatically applies a fallback plan (default: scale-up by 1 replica).
+
+On OpenClaw `2026.4.1`, the equivalent flow may be:
+
+```text
+[Plugin] creates task in "planning" state → launches Planner via CLI fallback
+[Planner] returns structured JSON plan
+[Plugin] applies that plan directly → task transitions planning → ready
+```
 
 ### Check health
 

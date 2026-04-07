@@ -16,6 +16,10 @@ This document records how to apply a new PimClaw build to the local testing Open
 - This testing environment uses the stock OpenClaw image and loads PimClaw as a path-based plugin.
 - Applying a new PimClaw build does not require rebuilding the OpenClaw container image.
 - The plugin files copied into the container must be owned by `node` or `root`, otherwise OpenClaw may block plugin loading with a suspicious ownership warning.
+- In `openclaw-4.1`, the plugin service context does not expose the agent trigger API PimClaw originally expected.
+  PimClaw therefore uses a compatibility fallback: it launches the Planner through the OpenClaw CLI.
+- In that fallback mode, the Planner may not receive PimClaw tools directly. To keep planning functional,
+  the Planner returns structured JSON and the plugin applies the resulting plan to the task store itself.
 
 ## Dedicated Agent Workspaces
 
@@ -129,6 +133,17 @@ Expected values:
 ```sh
 docker exec "openclaw-4.1" sh -lc 'openclaw health'
 ```
+
+### Confirm the OpenClaw 4.1 planner fallback is active
+
+```sh
+docker exec "openclaw-4.1" sh -lc 'grep -n "Using CLI-based planner trigger fallback" /tmp/openclaw/openclaw-$(date +%F).log'
+```
+
+Expected result:
+
+- PimClaw logs `Using CLI-based planner trigger fallback`
+- planner-triggered tasks can still move from `planning` to `ready`
 
 ## Common Failure Mode
 
