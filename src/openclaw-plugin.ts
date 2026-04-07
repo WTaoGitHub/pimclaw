@@ -121,15 +121,74 @@ const planningFallbackTimers: Map<string, ReturnType<typeof setTimeout>> = new M
 const toolHooks: ToolHook[] = [];
 const execFileAsync = promisify(execFile);
 
+interface PlannerSubmission {
+  taskId: string;
+  taskType: string;
+  config: Record<string, unknown>;
+  reasoning: string;
+  perfEvidence?: string;
+  simulationResults?: string;
+}
+
+async function applyPlannerSubmission(submission: PlannerSubmission): Promise<{ success: true; taskId: string; message: string } | { error: string }> {
+  if (!taskRecorder) {
+    return { error: 'PimClaw service not running' };
+  }
+
+  const task = taskRecorder.getTask(submission.taskId);
+  if (!task) {
+    return { error: `Task ${submission.taskId} not found` };
+  }
+
+  if (task.status !== 'planning') {
+    return { error: `Task ${submission.taskId} is in '${task.status}' state, expected 'planning'` };
+  }
+
+  task.taskType = submission.taskType;
+  task.config = submission.config;
+  task.reasoning = submission.reasoning;
+  task.perfEvidence = submission.perfEvidence;
+  task.simulationResults = submission.simulationResults;
+
+  clearPlanningFallback(submission.taskId);
+  await taskRecorder.updateTaskStatus(submission.taskId, 'ready');
+
+  return {
+    success: true,
+    taskId: submission.taskId,
+    message: `Task ${submission.taskId} planned and ready for scheduling`,
+  };
+}
+
 function createCliPlannerAgentApi(ctx: OpenClawPluginServiceContext): OpenClawAgentApi {
   return {
     async triggerAgent(agentId, options) {
+      const plannerInstruction = [
+        options.task,
+        'Return only valid JSON with this exact schema:',
+        JSON.stringify({
+          taskId: 'string',
+          taskType: 'scale-up | scale-down | restart | reconfigure',
+          config: {
+            replicas: 'number',
+            dtype: 'string',
+            quantization: 'string|null',
+            maxBatchSize: 'number',
+            tensorParallelism: 'number',
+          },
+          reasoning: 'string',
+          perfEvidence: 'string',
+          simulationResults: 'string',
+        }),
+        'Do not wrap the JSON in markdown fences.',
+      ].join('\n\n');
+
       const { stdout, stderr } = await execFileAsync(
         'openclaw',
         [
           'agent',
           '--agent', agentId,
-          '--message', options.task,
+          '--message', plannerInstruction,
           '--timeout', String(options.runTimeoutSeconds),
           '--json',
         ],
@@ -154,6 +213,23 @@ function createCliPlannerAgentApi(ctx: OpenClawPluginServiceContext): OpenClawAg
 
       if (parsed?.status && parsed.status !== 'ok') {
         throw new Error(`planner CLI run failed: ${parsed.status}`);
+      }
+
+      const plannerText = parsed?.result?.payloads?.map((payload: any) => payload?.text ?? '').join('\n').trim();
+      if (!plannerText) {
+        throw new Error('planner CLI returned no text payload');
+      }
+
+      let submission: PlannerSubmission;
+      try {
+        submission = JSON.parse(plannerText);
+      } catch (error) {
+        throw new Error(`planner CLI did not return valid JSON: ${error instanceof Error ? error.message : String(error)}`);
+      }
+
+      const applied = await applyPlannerSubmission(submission);
+      if ('error' in applied) {
+        throw new Error(applied.error);
       }
     },
   };
@@ -393,42 +469,17 @@ function buildPimClawTools() {
       required: ['taskId', 'taskType', 'config', 'reasoning'],
     },
     async execute(_sessionId: string, params: Record<string, unknown>) {
-      if (!taskRecorder) {
-        return { output: JSON.stringify({ error: 'PimClaw service not running' }) };
-      }
       try {
-        const taskId = params.taskId as string;
-        const task = taskRecorder.getTask(taskId);
-        if (!task) {
-          return { output: JSON.stringify({ error: `Task ${taskId} not found` }) };
-        }
-        if (task.status !== 'planning') {
-          return {
-            output: JSON.stringify({
-              error: `Task ${taskId} is in '${task.status}' state, expected 'planning'`,
-            }),
-          };
-        }
+        const result = await applyPlannerSubmission({
+          taskId: params.taskId as string,
+          taskType: params.taskType as string,
+          config: params.config as Record<string, unknown>,
+          reasoning: params.reasoning as string,
+          perfEvidence: params.perfEvidence as string | undefined,
+          simulationResults: params.simulationResults as string | undefined,
+        });
 
-        // Attach plan data to the task
-        task.taskType = params.taskType as string;
-        task.config = params.config as Record<string, unknown>;
-        task.reasoning = params.reasoning as string;
-        task.perfEvidence = params.perfEvidence as string | undefined;
-        task.simulationResults = params.simulationResults as string | undefined;
-
-        clearPlanningFallback(taskId);
-
-        // Transition planning → ready
-        await taskRecorder.updateTaskStatus(taskId, 'ready');
-
-        return {
-          output: JSON.stringify({
-            success: true,
-            taskId,
-            message: `Task ${taskId} planned and ready for scheduling`,
-          }),
-        };
+        return { output: JSON.stringify(result) };
       } catch (err) {
         return {
           output: JSON.stringify({
