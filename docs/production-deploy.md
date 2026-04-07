@@ -148,8 +148,15 @@ Example config fragment:
 The custom image bundles the plugin files, but PimClaw is only activated when the OpenClaw config for that environment includes the plugin load path and enables the `pimclaw` entry.
 
 The sample fragment also includes the two PimClaw agent entries with dedicated workspaces and minimal tool allowlists.
+The `pimclaw-planner` entry is only a registered agent definition. It is not
+intended to run continuously and should only be invoked by `PlannerTrigger`.
 
 5. Ensure agent definitions are present in OpenClaw config with dedicated workspaces
+
+Defining `pimclaw-planner` in the OpenClaw agent list does not make it proactively
+active. The Planner has no cron schedule and should not be treated as an always-on
+agent. It remains idle until the PimClaw `PlannerTrigger` component asks the
+OpenClaw agent runtime to spawn a one-shot planning run for a validated anomaly.
 
 6. Start OpenClaw
 

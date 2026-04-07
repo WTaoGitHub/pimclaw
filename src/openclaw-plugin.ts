@@ -14,8 +14,10 @@
  */
 
 import { definePluginEntry } from 'openclaw/plugin-sdk/plugin-entry';
+import { execFile } from 'node:child_process';
 import fs from 'fs/promises';
 import path from 'path';
+import { promisify } from 'node:util';
 import type {
   OpenClawPluginApi,
   OpenClawPluginService,
@@ -28,6 +30,7 @@ import { SchedulerAgent } from './master/scheduler-agent.js';
 import { AnomalyReceiver } from './master/anomaly-receiver.js';
 import type { AnomalyEvent } from './master/anomaly-receiver.js';
 import { PlannerTrigger } from './master/planner-trigger.js';
+import type { OpenClawAgentApi } from './master/planner-trigger.js';
 import type { Task } from './types/index.js';
 import { v4 as uuidv4 } from 'uuid';
 
@@ -109,12 +112,52 @@ let registry: ComponentRegistry | null = null;
 let taskRecorder: TaskStatusRecorder | null = null;
 let scheduler: SchedulerAgent | null = null;
 let anomalyReceiver: AnomalyReceiver | null = null;
+let pluginRuntime: unknown = null;
 let plannerFallbackTaskType: 'scale-up' | 'scale-down' | 'restart' | 'reconfigure' = 'scale-up';
 let plannerFallbackConfig: Record<string, unknown> = { replicaDelta: 1 };
 let planningTimeoutMs = 600_000;
 let pluginLogger: OpenClawPluginServiceContext['logger'] | null = null;
 const planningFallbackTimers: Map<string, ReturnType<typeof setTimeout>> = new Map();
 const toolHooks: ToolHook[] = [];
+const execFileAsync = promisify(execFile);
+
+function createCliPlannerAgentApi(ctx: OpenClawPluginServiceContext): OpenClawAgentApi {
+  return {
+    async triggerAgent(agentId, options) {
+      const { stdout, stderr } = await execFileAsync(
+        'openclaw',
+        [
+          'agent',
+          '--agent', agentId,
+          '--message', options.task,
+          '--timeout', String(options.runTimeoutSeconds),
+          '--json',
+        ],
+        {
+          cwd: options.workspaceDir ?? ctx.workspaceDir,
+          env: process.env,
+          timeout: options.runTimeoutSeconds * 1000,
+        },
+      );
+
+      if (stderr.trim()) {
+        ctx.logger.warn(`[PimClaw] Planner CLI stderr: ${stderr.trim()}`);
+      }
+
+      let parsed: any;
+      try {
+        parsed = JSON.parse(stdout);
+      } catch {
+        ctx.logger.info(`[PimClaw] Planner CLI raw output: ${stdout.trim()}`);
+        return;
+      }
+
+      if (parsed?.status && parsed.status !== 'ok') {
+        throw new Error(`planner CLI run failed: ${parsed.status}`);
+      }
+    },
+  };
+}
 
 function clearPlanningFallback(taskId: string): void {
   const timer = planningFallbackTimers.get(taskId);
@@ -191,11 +234,10 @@ function createPimClawService(): OpenClawPluginService {
       // 2. PlannerTrigger — spawns Planner agent via OpenClaw API
       plannerFallbackTaskType = plannerConfig.fallbackTaskType ?? 'scale-up';
       plannerFallbackConfig = plannerConfig.fallbackConfig ?? { replicaDelta: 1 };
-      const openclawApi = (ctx as any).openclawApi ?? {
-        triggerAgent: async () => {
-          ctx.logger.warn('[PimClaw] OpenClaw agent API not available — Planner trigger is a no-op');
-        },
-      };
+      const openclawApi = (ctx as any).openclawApi ?? createCliPlannerAgentApi(ctx);
+      if (!(ctx as any).openclawApi) {
+        ctx.logger.info('[PimClaw] Using CLI-based planner trigger fallback');
+      }
       const plannerTrigger = new PlannerTrigger(openclawApi, {
         agentId: plannerConfig.agentId ?? 'pimclaw-planner',
         timeoutSeconds: plannerConfig.timeoutSeconds ?? 600,
@@ -252,6 +294,7 @@ function createPimClawService(): OpenClawPluginService {
         taskRecorder = null;
       }
       registry = null;
+      pluginRuntime = null;
       pluginLogger = null;
       toolHooks.length = 0;
 
@@ -622,6 +665,7 @@ export default definePluginEntry({
     'LLM deployment orchestration — monitors metrics via LLM Head Agent, plans configs via LLM Planner Agent, and executes changes via programmatic Scheduler/Workers.',
 
   register(api: OpenClawPluginApi) {
+    pluginRuntime = api.runtime;
     api.registerService(createPimClawService());
 
     for (const toolFactory of buildPimClawTools()) {

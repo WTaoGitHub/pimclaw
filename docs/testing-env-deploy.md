@@ -25,6 +25,9 @@ The testing environment should use dedicated workspaces for the two PimClaw agen
 - `pimclaw-planner` -> `/home/node/.openclaw/workspaces/pimclaw-planner`
 
 These values are stored in `/Users/bati/openclaw-docker/myclaw/openclaw.json` under `agents.list`.
+The `pimclaw-planner` entry there is only a registered agent definition. It is
+not continuously active. In PimClaw, the Planner stays idle until the plugin's
+`PlannerTrigger` launches an on-demand run for a validated anomaly.
 
 ## Deployment Steps
 

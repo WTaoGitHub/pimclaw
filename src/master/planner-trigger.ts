@@ -22,6 +22,11 @@ export interface PlannerTriggerConfig {
   workspaceDir?: string;
 }
 
+export interface PlannerTriggerPayload {
+  event: ValidatedEvent;
+  taskId: string;
+}
+
 const DEFAULT_CONFIG: PlannerTriggerConfig = {
   agentId: 'pimclaw-planner',
   timeoutSeconds: 600,
@@ -37,15 +42,20 @@ export class PlannerTrigger {
   }
 
   async trigger(event: ValidatedEvent, taskId: string): Promise<void> {
+    const payload: PlannerTriggerPayload = { event, taskId };
     await this.openclawApi.triggerAgent(this.config.agentId, {
-      task: `Plan optimal config for anomaly: ${event.reasoning || event.type + ' on ' + event.metricName}`,
+      task: [
+        'Plan optimal config for the anomaly described in the JSON payload below.',
+        'Use the payload values as the authoritative input.',
+        JSON.stringify(payload),
+      ].join('\n\n'),
       mode: 'run',
       cleanup: 'delete',
       runTimeoutSeconds: this.config.timeoutSeconds,
       workspaceDir: this.config.workspaceDir,
       attachments: [{
         type: 'json',
-        content: JSON.stringify({ event, taskId }),
+        content: JSON.stringify(payload),
       }],
     });
   }
