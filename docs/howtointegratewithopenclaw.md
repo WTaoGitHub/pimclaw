@@ -23,13 +23,13 @@ All task data is stored in OpenClaw's `stateDir` so it survives restarts. LLM ag
 ### Option A — Install from a local path
 
 ```bash
-openclaw plugin add /path/to/pimclaw
+openclaw plugins install /path/to/pimclaw
 ```
 
 ### Option B — Install from npm
 
 ```bash
-openclaw plugin add pimclaw
+openclaw plugins install pimclaw
 ```
 
 ### Option C — Reference in your OpenClaw config
@@ -46,23 +46,23 @@ Add PimClaw to the `plugins` array in your OpenClaw configuration file (`opencla
 
 ### Option D — Install into a Docker container
 
-If OpenClaw runs inside Docker, copy the plugin source into the container and link it:
+If OpenClaw runs inside Docker, copy the plugin source into a stable container path and install it from there:
 
 ```bash
 # Copy the plugin into the container
-docker cp /path/to/pimclaw openclaw-container:/tmp/pimclaw
+docker cp /path/to/pimclaw openclaw-container:/app/plugins/pimclaw
 
-# Install production dependencies inside the container
-docker exec openclaw-container sh -c 'cd /tmp/pimclaw && npm install --production'
+# Fix ownership so OpenClaw accepts the plugin
+docker exec -u root openclaw-container sh -lc 'chown -R node:node /app/plugins/pimclaw'
 
-# Register the plugin with --link so changes take effect immediately
-docker exec openclaw-container openclaw plugin add --link /tmp/pimclaw
+# Install the plugin from the stable path
+docker exec openclaw-container sh -lc 'openclaw plugins install /app/plugins/pimclaw'
 
-# Enable the plugin
-docker exec openclaw-container openclaw plugin enable pimclaw
+# Restart OpenClaw
+docker restart openclaw-container
 ```
 
-After installation, restart or reload OpenClaw — the plugin service starts automatically and the LLM agents begin their cron schedules.
+After installation, restart OpenClaw. The plugin service starts automatically and the LLM agents begin their cron schedules.
 
 ---
 
@@ -383,15 +383,17 @@ Environment variable substitution is supported in YAML values using `${VAR_NAME}
 ### Plugin doesn't appear
 
 ```bash
-openclaw plugin list          # verify pimclaw is listed
-openclaw plugin enable pimclaw  # if disabled
+openclaw plugins list            # verify pimclaw is listed
+openclaw plugins inspect pimclaw # verify pimclaw is loaded
+openclaw plugins doctor          # verify there are no plugin issues
 ```
 
 In Docker:
 
 ```bash
-docker exec openclaw-container openclaw plugin list
-docker exec openclaw-container openclaw plugin enable pimclaw
+docker exec openclaw-container sh -lc 'openclaw plugins list'
+docker exec openclaw-container sh -lc 'openclaw plugins inspect pimclaw'
+docker exec openclaw-container sh -lc 'openclaw plugins doctor'
 ```
 
 ### Components not starting

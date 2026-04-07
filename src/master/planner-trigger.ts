@@ -11,6 +11,7 @@ export interface OpenClawAgentApi {
     mode: string;
     cleanup: string;
     runTimeoutSeconds: number;
+    workspaceDir?: string;
     attachments?: Array<{ type: string; content: string }>;
   }): Promise<void>;
 }
@@ -18,6 +19,7 @@ export interface OpenClawAgentApi {
 export interface PlannerTriggerConfig {
   agentId: string;
   timeoutSeconds: number;
+  workspaceDir?: string;
 }
 
 const DEFAULT_CONFIG: PlannerTriggerConfig = {
@@ -40,6 +42,7 @@ export class PlannerTrigger {
       mode: 'run',
       cleanup: 'delete',
       runTimeoutSeconds: this.config.timeoutSeconds,
+      workspaceDir: this.config.workspaceDir,
       attachments: [{
         type: 'json',
         content: JSON.stringify({ event, taskId }),

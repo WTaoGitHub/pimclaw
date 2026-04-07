@@ -14,16 +14,17 @@
           "allowedMetrics": { "type": "array", "items": { "type": "string" } }
         }
       },
-      "planner": {
-        "type": "object",
-        "properties": {
-          "agentId": { "type": "string", "default": "pimclaw-planner" },
-          "timeoutSeconds": { "type": "number", "default": 600 },
-          "fallbackTaskType": { "type": "string", "default": "scale-up" },
-          "fallbackConfig": { "type": "object" }
+        "planner": {
+          "type": "object",
+          "properties": {
+            "agentId": { "type": "string", "default": "pimclaw-planner" },
+            "timeoutSeconds": { "type": "number", "default": 600 },
+            "workspaceDir": { "type": "string", "default": ".pimclaw-agents/planner" },
+            "fallbackTaskType": { "type": "string", "default": "scale-up" },
+            "fallbackConfig": { "type": "object" }
+          }
         }
       }
-    }
   },
   "contracts": {
     "tools": [

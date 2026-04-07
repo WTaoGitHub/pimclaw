@@ -114,13 +114,13 @@ npm publish --registry https://npm.pkg.github.com
 ### Option 1 — Install from npm
 
 ```bash
-openclaw plugin add pimclaw
+openclaw plugins install pimclaw
 ```
 
 ### Option 2 — Install from a local path
 
 ```bash
-openclaw plugin add /path/to/pimclaw
+openclaw plugins install /path/to/pimclaw
 ```
 
 ### Option 3 — Install into a Docker container
@@ -129,27 +129,26 @@ openclaw plugin add /path/to/pimclaw
 # 1. Build locally
 npm run build
 
-# 2. Copy into the container
-docker cp . openclaw-container:/tmp/pimclaw
+# 2. Copy into a stable path in the container
+docker cp . openclaw-container:/app/plugins/pimclaw
 
-# 3. Install production dependencies inside the container
-docker exec openclaw-container sh -c \
-  'cd /tmp/pimclaw && npm install --production'
+# 3. Ensure the plugin files are owned by the runtime user
+docker exec -u root openclaw-container sh -lc 'chown -R node:node /app/plugins/pimclaw'
 
-# 4. Register with --link (changes take effect without re-copy)
-docker exec openclaw-container openclaw plugin add --link /tmp/pimclaw
+# 4. Install the plugin from that path
+docker exec openclaw-container sh -lc 'openclaw plugins install /app/plugins/pimclaw'
 
-# 5. Enable the plugin
-docker exec openclaw-container openclaw plugin enable pimclaw
+# 5. Restart OpenClaw so the service restarts cleanly
+docker restart openclaw-container
 ```
 
 To update after code changes:
 
 ```bash
 npm run build
-docker cp . openclaw-container:/tmp/pimclaw
-# OpenClaw picks up changes via the symlink — restart or reload
-docker exec openclaw-container openclaw reload
+docker cp . openclaw-container:/app/plugins/pimclaw
+docker exec -u root openclaw-container sh -lc 'chown -R node:node /app/plugins/pimclaw'
+docker restart openclaw-container
 ```
 
 ### Option 4 — Reference in OpenClaw config
@@ -165,11 +164,17 @@ docker exec openclaw-container openclaw reload
 ### Verify installation
 
 ```bash
-openclaw plugin list               # pimclaw should appear
-openclaw plugin enable pimclaw     # if not enabled
+openclaw plugins list              # pimclaw should appear
+openclaw plugins inspect pimclaw   # pimclaw should be loaded
+openclaw plugins doctor            # no plugin issues
 ```
 
 Once activated, the `pimclaw-components` service starts automatically and the ten tools (`pimclaw_submit_anomalies`, `pimclaw_plan_task`, `pimclaw_route_task`, `pimclaw_health`, etc.) become available to all agent sessions. The LLM Head and Planner agents must also be configured in OpenClaw's agent runtime — see `AGENTS.md`.
+
+For current environment-specific deployment paths, see:
+
+- `docs/testing-env-deploy.md`
+- `docs/production-deploy.md`
 
 ## Compatibility
 

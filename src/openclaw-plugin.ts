@@ -14,6 +14,8 @@
  */
 
 import { definePluginEntry } from 'openclaw/plugin-sdk/plugin-entry';
+import fs from 'fs/promises';
+import path from 'path';
 import type {
   OpenClawPluginApi,
   OpenClawPluginService,
@@ -178,8 +180,15 @@ function createPimClawService(): OpenClawPluginService {
       );
       await taskRecorder.initialize();
 
-      // 2. PlannerTrigger — spawns Planner agent via OpenClaw API
+      const agentWorkspaceRoot = path.join(ctx.workspaceDir, '.pimclaw-agents');
+      const headWorkspaceDir = path.join(agentWorkspaceRoot, 'head');
       const plannerConfig = (ctx.config as any)?.planner ?? {};
+      const plannerWorkspaceDir = plannerConfig.workspaceDir ?? path.join(agentWorkspaceRoot, 'planner');
+
+      await fs.mkdir(headWorkspaceDir, { recursive: true });
+      await fs.mkdir(plannerWorkspaceDir, { recursive: true });
+
+      // 2. PlannerTrigger — spawns Planner agent via OpenClaw API
       plannerFallbackTaskType = plannerConfig.fallbackTaskType ?? 'scale-up';
       plannerFallbackConfig = plannerConfig.fallbackConfig ?? { replicaDelta: 1 };
       const openclawApi = (ctx as any).openclawApi ?? {
@@ -190,7 +199,12 @@ function createPimClawService(): OpenClawPluginService {
       const plannerTrigger = new PlannerTrigger(openclawApi, {
         agentId: plannerConfig.agentId ?? 'pimclaw-planner',
         timeoutSeconds: plannerConfig.timeoutSeconds ?? 600,
+        workspaceDir: plannerWorkspaceDir,
       });
+
+      ctx.logger.info(
+        `[PimClaw] Dedicated agent workspaces ready: head=${headWorkspaceDir}, planner=${plannerWorkspaceDir}`,
+      );
 
       // 3. AnomalyReceiver — validates events from LLM Head, triggers Planner
       const receiverConfig = (ctx.config as any)?.anomalyReceiver ?? {};

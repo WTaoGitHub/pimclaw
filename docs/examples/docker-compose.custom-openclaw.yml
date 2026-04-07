@@ -1,0 +1,17 @@
+version: '3.8'
+
+services:
+  openclaw:
+    image: pimclaw-openclaw:2026.4.1
+    container_name: pimclaw-openclaw
+    ports:
+      - "18789:18789"
+    volumes:
+      - ./data:/app/data
+      - ./config:/app/config
+      - ./openclaw-home:/home/node/.openclaw
+      - /var/run/docker.sock:/var/run/docker.sock
+    environment:
+      NODE_ENV: production
+      TZ: UTC
+    restart: unless-stopped

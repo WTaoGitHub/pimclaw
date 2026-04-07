@@ -292,8 +292,8 @@
 **Goal:** Verify tools return clear errors when the plugin service is not active.
 
 **Steps:**
-1. Disable the PimClaw plugin: `openclaw plugin disable pimclaw`
-2. Reload OpenClaw
+1. Disable the PimClaw plugin: `openclaw plugins disable pimclaw`
+2. Restart OpenClaw
 3. Call `pimclaw_health` from an agent session
 
 **Expected:**
@@ -303,7 +303,7 @@
 
 **Pass criteria:**
 - All 10 tools return `{ "error": "PimClaw service not running" }` when the service is stopped
-- Re-enabling the plugin (`openclaw plugin enable pimclaw`) and reloading restores normal operation
+- Re-enabling the plugin (`openclaw plugins enable pimclaw`) and restarting restores normal operation
 
 **Cleanup:** Re-enable the plugin after this test.
 
@@ -316,7 +316,7 @@
 **Steps:**
 1. Submit 2 tasks via `pimclaw_route_task`
 2. Call `pimclaw_task_counts` — note the counts
-3. Restart OpenClaw (or reload plugins)
+3. Restart OpenClaw
 4. Call `pimclaw_task_counts` again
 5. Call `pimclaw_list_tasks` — verify the previously submitted tasks are present
 

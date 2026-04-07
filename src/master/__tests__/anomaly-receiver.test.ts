@@ -73,6 +73,7 @@ describe('AnomalyReceiver', () => {
       expect.objectContaining({
         mode: 'run',
         cleanup: 'delete',
+        workspaceDir: undefined,
       }),
     );
   });

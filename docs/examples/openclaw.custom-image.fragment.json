@@ -1,0 +1,55 @@
+{
+  "agents": {
+    "defaults": {
+      "workspace": "/home/node/.openclaw/workspace"
+    },
+    "list": [
+      {
+        "id": "main",
+        "tools": {
+          "profile": "full"
+        }
+      },
+      {
+        "id": "pimclaw-head",
+        "name": "pimclaw-head",
+        "workspace": "/home/node/.openclaw/workspaces/pimclaw-head",
+        "agentDir": "/home/node/.openclaw/agents/pimclaw-head/agent",
+        "tools": {
+          "profile": "minimal",
+          "allow": [
+            "pimclaw_submit_anomalies",
+            "pimclaw_task_counts",
+            "pimclaw_health"
+          ]
+        }
+      },
+      {
+        "id": "pimclaw-planner",
+        "name": "pimclaw-planner",
+        "workspace": "/home/node/.openclaw/workspaces/pimclaw-planner",
+        "agentDir": "/home/node/.openclaw/agents/pimclaw-planner/agent",
+        "tools": {
+          "profile": "minimal",
+          "allow": [
+            "pimclaw_plan_task",
+            "pimclaw_health",
+            "pimclaw_task_counts"
+          ]
+        }
+      }
+    ]
+  },
+  "plugins": {
+    "entries": {
+      "pimclaw": {
+        "enabled": true
+      }
+    },
+    "load": {
+      "paths": [
+        "/app/extensions/pimclaw"
+      ]
+    }
+  }
+}

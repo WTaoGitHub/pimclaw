@@ -32,6 +32,7 @@ describe('PimClaw v2 integration', () => {
     const plannerTrigger = new PlannerTrigger(plannerApi as any, {
       agentId: 'pimclaw-planner',
       timeoutSeconds: 600,
+      workspaceDir: '/tmp/pimclaw-planner-workspace',
     });
     const anomalyReceiver = new AnomalyReceiver(recorder, plannerTrigger);
 
@@ -54,6 +55,7 @@ describe('PimClaw v2 integration', () => {
     const planningTask = recorder.getTask(taskId);
     expect(planningTask?.status).toBe('planning');
     expect(triggerCalls).toHaveLength(1);
+    expect(triggerCalls[0].taskId).toBe(taskId);
 
     planningTask!.taskType = 'scale-up';
     planningTask!.config = { replicas: 3, dtype: 'fp16' };

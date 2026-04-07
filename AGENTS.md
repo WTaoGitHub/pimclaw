@@ -16,6 +16,7 @@ model: minimax-m2_1
 thinking: disabled
 cron: "*/5 * * * *"
 sessionKey: pimclaw-head-session
+workspaceDir: ./.pimclaw-agents/head
 subagents:
   maxDepth: 0
 ```
@@ -107,6 +108,7 @@ name: PimClaw Planner
 agentId: pimclaw-planner
 model: minimax-m2_1
 thinking: enabled
+workspaceDir: ./.pimclaw-agents/planner
 subagents:
   maxDepth: 0
 ```
