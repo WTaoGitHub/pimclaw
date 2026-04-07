@@ -14,17 +14,30 @@
           "allowedMetrics": { "type": "array", "items": { "type": "string" } }
         }
       },
-        "planner": {
-          "type": "object",
-          "properties": {
-            "agentId": { "type": "string", "default": "pimclaw-planner" },
-            "timeoutSeconds": { "type": "number", "default": 600 },
-            "workspaceDir": { "type": "string", "default": ".pimclaw-agents/planner" },
-            "fallbackTaskType": { "type": "string", "default": "scale-up" },
-            "fallbackConfig": { "type": "object" }
-          }
+      "planner": {
+        "type": "object",
+        "properties": {
+          "agentId": { "type": "string", "default": "pimclaw-planner" },
+          "timeoutSeconds": { "type": "number", "default": 600 },
+          "workspaceDir": { "type": "string", "default": ".pimclaw-agents/planner" },
+          "fallbackTaskType": { "type": "string", "default": "scale-up" },
+          "fallbackConfig": { "type": "object" }
         }
+      },
+      "prometheus": {
+        "type": "object",
+        "properties": {
+          "baseUrl": { "type": "string" },
+          "queryOverrides": { "type": "object", "additionalProperties": { "type": "string" } },
+          "defaultLabels": { "type": "object", "additionalProperties": { "type": "string" } },
+          "timeoutMs": { "type": "number", "default": 10000 },
+          "username": { "type": "string" },
+          "password": { "type": "string" },
+          "bearerToken": { "type": "string" }
+        },
+        "required": ["baseUrl"]
       }
+    }
   },
   "contracts": {
     "tools": [
@@ -37,7 +50,8 @@
       "pimclaw_task_counts",
       "pimclaw_list_tasks",
       "pimclaw_retry_task",
-      "pimclaw_revoke_task"
+      "pimclaw_revoke_task",
+      "pimclaw_query_metrics"
     ]
   }
 }

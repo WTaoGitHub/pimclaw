@@ -31,6 +31,12 @@ import { AnomalyReceiver } from './master/anomaly-receiver.js';
 import type { AnomalyEvent } from './master/anomaly-receiver.js';
 import { PlannerTrigger } from './master/planner-trigger.js';
 import type { OpenClawAgentApi } from './master/planner-trigger.js';
+import {
+  PrometheusClient,
+  vllmPromQLMap,
+  injectLabels,
+} from './master/prometheus-client.js';
+import type { PrometheusClientOptions } from './master/prometheus-client.js';
 import type { Task } from './types/index.js';
 import { v4 as uuidv4 } from 'uuid';
 
@@ -112,6 +118,9 @@ let registry: ComponentRegistry | null = null;
 let taskRecorder: TaskStatusRecorder | null = null;
 let scheduler: SchedulerAgent | null = null;
 let anomalyReceiver: AnomalyReceiver | null = null;
+let prometheusClient: PrometheusClient | null = null;
+let prometheusQueryOverrides: Record<string, string> = {};
+let prometheusDefaultLabels: Record<string, string> = {};
 let pluginRuntime: unknown = null;
 let plannerFallbackTaskType: 'scale-up' | 'scale-down' | 'restart' | 'reconfigure' = 'scale-up';
 let plannerFallbackConfig: Record<string, unknown> = { replicaDelta: 1 };
@@ -349,6 +358,23 @@ function createPimClawService(): OpenClawPluginService {
         ctx.logger.error(`[PimClaw] Scheduler error: ${err}`),
       );
 
+      // 5. PrometheusClient — for pimclaw_query_metrics tool
+      const promCfg = (ctx.config as any)?.prometheus;
+      if (promCfg?.baseUrl) {
+        prometheusClient = new PrometheusClient({
+          baseUrl: promCfg.baseUrl,
+          timeoutMs: promCfg.timeoutMs,
+          username: promCfg.username,
+          password: promCfg.password,
+          bearerToken: promCfg.bearerToken,
+        });
+        prometheusQueryOverrides = promCfg.queryOverrides ?? {};
+        prometheusDefaultLabels = promCfg.defaultLabels ?? {};
+        ctx.logger.info(`[PimClaw] Prometheus client configured → ${promCfg.baseUrl}`);
+      } else {
+        ctx.logger.warn('[PimClaw] No prometheus.baseUrl configured — pimclaw_query_metrics will be unavailable');
+      }
+
       ctx.logger.info(
         '[PimClaw] Components started (TaskRecorder → AnomalyReceiver → Scheduler)',
       );
@@ -370,6 +396,9 @@ function createPimClawService(): OpenClawPluginService {
         taskRecorder = null;
       }
       registry = null;
+      prometheusClient = null;
+      prometheusQueryOverrides = {};
+      prometheusDefaultLabels = {};
       pluginRuntime = null;
       pluginLogger = null;
       toolHooks.length = 0;
@@ -382,6 +411,77 @@ function createPimClawService(): OpenClawPluginService {
 // ─── Tool builders ─────────────────────────────────────────────────────────
 
 function buildPimClawTools() {
+  // ── Prometheus Metrics Tool (Phase 1, Step 3) ──────────────────────────
+  const queryMetricsTool = () => ({
+    name: 'pimclaw_query_metrics',
+    description:
+      'Query Prometheus for vLLM metrics (TTFT, TPOT, QPS, throughput, GPU utilization, error rate). Called by the Head Agent for anomaly detection.',
+    parameters: {
+      type: 'object' as const,
+      properties: {
+        metrics: {
+          type: 'array',
+          items: { type: 'string' },
+          description:
+            'Which metrics to fetch. Options: ttft, tpot, qps, throughput, gpu_utilization, error_rate. Default: all.',
+        },
+        deploymentName: {
+          type: 'string',
+          description: 'vLLM model_name label to filter by',
+        },
+        rangeMinutes: {
+          type: 'number',
+          description: 'If set, return time-series range data for trend detection instead of an instant value',
+        },
+      },
+    },
+    async execute(_sessionId: string, params: Record<string, unknown>) {
+      if (!prometheusClient) {
+        return {
+          output: JSON.stringify({
+            error: 'Prometheus not configured. Set prometheus.baseUrl in plugin config.',
+          }),
+        };
+      }
+
+      const requestedMetrics = (params.metrics as string[] | undefined) ?? Object.keys(vllmPromQLMap);
+      const deploymentName = params.deploymentName as string | undefined;
+      const rangeMinutes = params.rangeMinutes as number | undefined;
+      const nowSec = Math.floor(Date.now() / 1000);
+
+      const results: Record<string, unknown> = {};
+
+      for (const metric of requestedMetrics) {
+        // Resolve PromQL: config override > default vLLM map
+        let promql = prometheusQueryOverrides[metric] ?? vllmPromQLMap[metric];
+        if (!promql) {
+          results[metric] = { error: `Unknown metric: ${metric}` };
+          continue;
+        }
+
+        // Inject labels (deploymentName + defaultLabels from config)
+        const labels: Record<string, string> = { ...prometheusDefaultLabels };
+        if (deploymentName) {
+          labels['model_name'] = deploymentName;
+        }
+        promql = injectLabels(promql, labels);
+
+        try {
+          if (rangeMinutes) {
+            const start = nowSec - rangeMinutes * 60;
+            const step = Math.max(15, Math.floor((rangeMinutes * 60) / 20));
+            results[metric] = await prometheusClient.queryRange(promql, start, nowSec, step);
+          } else {
+            results[metric] = await prometheusClient.query(promql);
+          }
+        } catch (err) {
+          results[metric] = { error: err instanceof Error ? err.message : String(err) };
+        }
+      }
+
+      return { output: JSON.stringify(results) };
+    },
+  });
 
   // ── Gate 1: LLM Head Agent → Plugin ──────────────────────────────────────
 
@@ -697,6 +797,7 @@ function buildPimClawTools() {
     submitAnomaliesTool,
     planTaskTool,
     routeTaskTool,
+    queryMetricsTool,
     listComponentsTool,
     componentStatusTool,
     healthTool,

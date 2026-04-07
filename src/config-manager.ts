@@ -22,6 +22,15 @@ export interface PimClawConfig {
   mcp: {
     services: Record<string, MCPServiceConfig>;
   };
+  prometheus?: {
+    baseUrl: string;
+    queryOverrides?: Record<string, string>;
+    defaultLabels?: Record<string, string>;
+    timeoutMs?: number;
+    username?: string;
+    password?: string;
+    bearerToken?: string;
+  };
   storage?: {
     path?: string;
     type?: 'file' | 'database';
