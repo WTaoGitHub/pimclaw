@@ -50,7 +50,7 @@ OPENCLAW PLATFORM
 │
 ├─ [LLM Agent] pimclaw-head (cron: */5 * * * *)
 │   ├─ Model: configurable (default: minimax-m2_1)
-│   ├─ Tools: Grafana MCP, pimclaw_submit_anomalies, pimclaw_task_counts
+│   ├─ Tools: pimclaw_query_metrics, pimclaw_submit_anomalies, pimclaw_task_counts
 │   ├─ Session: persistent (accumulates observation history)
 │   └─ Job: Detect anomalies only
 │
@@ -64,6 +64,7 @@ OPENCLAW PLATFORM
     ├─ Service (lifecycle-managed)
     │   ├─ AnomalyReceiver   ← receives events from LLM Head
     │   ├─ PlannerTrigger    ← spawns Planner agent per event
+    │   ├─ PrometheusClient   ← HTTP client for metric collection
     │   ├─ Task Status Recorder (unchanged, +planning state)
     │   ├─ Scheduler           (unchanged, loop every 5s)
     │   └─ Workers             (unchanged, ephemeral)
@@ -77,6 +78,7 @@ OPENCLAW PLATFORM
         ├─ pimclaw_health
         ├─ pimclaw_task_counts
         ├─ pimclaw_list_tasks
+        ├─ pimclaw_query_metrics   ← NEW: Head queries Prometheus metrics
         ├─ pimclaw_retry_task
         └─ pimclaw_revoke_task
 ```
@@ -87,12 +89,14 @@ OPENCLAW PLATFORM
               DETECTION (LLM)             PLANNING (LLM)           EXECUTION (code)
               ──────────────              ──────────────           ────────────────
 
-Grafana MCP ──→ [LLM Head Agent]
-                 │ Reason about:
-                 │ - Multi-metric correlation
-                 │ - Trend detection
-                 │ - Seasonal patterns
-                 │ - Context from history
+                 [LLM Head Agent]
+                 │ 1. Call pimclaw_query_metrics
+                 │    (Prometheus HTTP → engine PromQL)
+                 │ 2. Reason about:
+                 │    - Multi-metric correlation
+                 │    - Trend detection
+                 │    - Seasonal patterns
+                 │    - Context from history
                  │
                  ▼
         pimclaw_submit_anomalies
@@ -141,7 +145,7 @@ The LLM boundary has **two narrow gates**: the Head outputs anomaly events, the 
 | Aspect | Before (v0) | After (v2) |
 |--------|-------------|------------|
 | **Runtime** | TypeScript `while(true)` loop | OpenClaw LLM agent, cron-triggered |
-| **Metric collection** | `callMCPTool('grafana', ...)` from code | LLM calls Grafana MCP tools directly |
+| **Metric collection** | `callMCPTool('grafana', ...)` from code | LLM calls `pimclaw_query_metrics` tool (Prometheus HTTP direct, engine-specific PromQL) |
 | **Anomaly detection** | Hardcoded thresholds (`>200%` spike, `<50%` drop) | LLM reasoning with guidelines in system prompt |
 | **Output** | Direct `taskRecorder.createTask()` calls | Calls `pimclaw_submit_anomalies` tool with structured events |
 | **Snapshot history** | In-memory array + JSON file | OpenClaw session persistence (transcript) |
@@ -187,9 +191,11 @@ The `planning` state represents a task awaiting configuration from the Planner a
 | Component | Purpose |
 |-----------|---------|
 | `pimclaw_submit_anomalies` tool | Receives structured anomaly events from the LLM Head Agent |
+| `pimclaw_query_metrics` tool | Queries Prometheus for inference metrics (TTFT, TPOT, QPS, throughput, GPU utilization, error rate) via engine-specific PromQL |
 | `pimclaw_plan_task` tool | Receives deployment config from the LLM Planner Agent |
 | `AnomalyReceiver` | Validates incoming events, triggers Planner agent per event |
 | `PlannerTrigger` | Spawns Planner agent via OpenClaw API with event context |
+| `PrometheusClient` | Lightweight HTTP client wrapping Prometheus `/api/v1/query` and `/api/v1/query_range` with auth support |
 | LLM Head Agent definition | AGENTS.md config + system prompt (detection only) |
 | LLM Planner Agent definition | AGENTS.md config + system prompt (config planning) |
 
@@ -217,19 +223,19 @@ agent handles that.
 ## Your Job
 
 Every 5 minutes, you:
-1. Collect current metrics from Grafana
+1. Call pimclaw_query_metrics to collect current metrics from Prometheus
 2. Compare with your previous observations (in this conversation history)
 3. Detect anomalies worth acting on
 4. Submit detected anomalies via the pimclaw_submit_anomalies tool
 
 ## Metrics to Monitor
 
-Collect from Grafana:
+Collect via pimclaw_query_metrics (backed by Prometheus + engine-specific PromQL):
 - **TTFT** (Time to First Token) — latency indicator
 - **TPOT** (Time per Output Token) — generation speed
 - **QPS** (Queries per Second) — request volume
 - **Throughput** (tokens/sec) — capacity utilization
-- **GPU Utilization** (%) — hardware saturation
+- **GPU Utilization** (%) — KV cache usage / token_usage as hardware saturation proxy
 - **Error Rate** (%) — service health
 
 ## Anomaly Detection Guidelines
@@ -309,6 +315,17 @@ Run 4 (00:15): See Runs 1-3 → Collect → "TTFT 500ms, 233% spike. Submitting 
 ```
 
 The LLM naturally accumulates context. OpenClaw's auto-compaction handles context window growth — older observations get summarized, keeping the most recent turns intact.
+
+### Engine-Specific PromQL Maps
+
+The `pimclaw_query_metrics` tool uses pre-built PromQL query maps tailored to each inference engine:
+
+| Engine | TTFT | TPOT | QPS | GPU Proxy |
+|--------|------|------|-----|-----------|
+| **vLLM** | `vllm:time_to_first_token_seconds_bucket` | `vllm:request_time_per_output_token_seconds_bucket` | `vllm:request_success_total` | `vllm:kv_cache_usage_perc` |
+| **SGLang** | `sglang:time_to_first_token_seconds_bucket` | `sglang:inter_token_latency_seconds_bucket` | `sglang:num_requests_total` | `sglang:token_usage` |
+
+The active map is selected via the `prometheus.engine` config field (`"vllm"` or `"sglang"`). Individual queries can be overridden via `prometheus.queryOverrides` for custom setups. Label filters (e.g., `model_name`) are injected automatically via `injectLabels()` from `deploymentName` parameter and `prometheus.defaultLabels` config.
 
 ---
 
@@ -507,7 +524,39 @@ No changes. EventEmitter-based in-memory status tracking for all PimClaw compone
 
 ## 7. Integration Boundary
 
-There are **two integration points** between the LLM agents and the programmatic system — one per agent.
+There are **three integration points** between the LLM agents and the programmatic system.
+
+### Metrics Input: `pimclaw_query_metrics` Tool (Prometheus → Head)
+
+Provides the Head Agent with real-time inference metrics from Prometheus. Not a validation gate — this is the data input mechanism.
+
+```typescript
+// Tool: pimclaw_query_metrics
+{
+  name: 'pimclaw_query_metrics',
+  description: 'Query Prometheus for inference metrics (TTFT, TPOT, QPS, throughput, GPU utilization, error rate). Called by the Head Agent for anomaly detection.',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      metrics: {
+        type: 'array',
+        items: { type: 'string' },
+        description: 'Which metrics to fetch. Options: ttft, tpot, qps, throughput, gpu_utilization, error_rate. Default: all.',
+      },
+      deploymentName: {
+        type: 'string',
+        description: 'model_name label to filter by',
+      },
+      rangeMinutes: {
+        type: 'number',
+        description: 'If set, return time-series range data for trend detection instead of an instant value',
+      },
+    },
+  },
+}
+```
+
+Backed by `PrometheusClient` (initialized in service `start()`). Uses engine-specific PromQL maps (`vllmPromQLMap` or `sglangPromQLMap`), with per-metric overrides from `prometheus.queryOverrides` config. Label matchers from `deploymentName` and `prometheus.defaultLabels` are injected via `injectLabels()` before query execution.
 
 ### Gate 1: `pimclaw_submit_anomalies` Tool (Head → Plugin)
 
@@ -517,7 +566,7 @@ Receives anomaly events from the Head Agent. Replaces the old `createTaskFromEve
 // New tool: pimclaw_submit_anomalies
 {
   name: 'pimclaw_submit_anomalies',
-  description: 'Submit detected anomaly events for task planning. Called by the PimClaw Head Agent after analyzing Grafana metrics.',
+  description: 'Submit detected anomaly events for task planning. Called by the PimClaw Head Agent after analyzing Prometheus metrics.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -640,6 +689,25 @@ Each LLM agent's output is **structured data**, not **actions**. The plugin vali
 
 ## 8. Implementation Plan
 
+### Phase 0: Prometheus Metrics Tool ✅
+
+**New code (completed):**
+- `src/master/prometheus-client.ts` — `PrometheusClient` class wrapping `/api/v1/query` and `/api/v1/query_range`, with `AbortSignal.timeout()`, basic auth, and bearer token support
+- `vllmPromQLMap` and `sglangPromQLMap` — engine-specific PromQL query maps for all 6 PimClaw metrics (P95 quantiles for TTFT/TPOT, 5-minute rate windows)
+- `getPromQLMap(engine)` — engine selector function
+- `injectLabels(promql, labels)` — label injection for PromQL expressions (handles existing `{...}` selectors)
+- `pimclaw_query_metrics` tool registered in `openclaw-plugin.ts` — params: `metrics[]`, `deploymentName?`, `rangeMinutes?`
+- `prometheus` config section in `openclaw.plugin.json` — `baseUrl`, `engine`, `queryOverrides`, `defaultLabels`, `timeoutMs`, auth fields
+- Updated Head agent system prompt in `AGENTS.md` — "Collect from Grafana" → "Call `pimclaw_query_metrics`"
+
+**Tests (completed):**
+- 18 unit tests (`prometheus-client.test.ts`) — mock fetch, PromQL map coverage, error handling, auth headers, label injection
+- 10 live integration tests (`prometheus-client.live.test.ts`) — verified against real Prometheus (SGLang engine, MiniMax-M2.1 model)
+
+**Validated:**
+- End-to-end: Head agent calls `pimclaw_query_metrics` inside Docker container, receives real SGLang metrics from Prometheus, performs anomaly analysis
+- Network path: Docker container → `host.docker.internal` proxy → Prometheus at `10.1.112.237:29000`
+
 ### Phase 1: Extend the Task State Machine
 
 **Changed code:**
@@ -681,7 +749,7 @@ Each LLM agent's output is **structured data**, not **actions**. The plugin vali
 - Cron job configuration
 
 **Validation:**
-- Run Head Agent manually → verify it calls Grafana MCP
+- Run Head Agent manually → verify it calls `pimclaw_query_metrics`
 - Verify it calls `pimclaw_submit_anomalies` with correct event structure
 - Verify AnomalyReceiver creates tasks in `planning` state
 - Verify PlannerTrigger fires
@@ -778,11 +846,33 @@ The Planner has **no cron job** — it's triggered on-demand per anomaly event.
     "timeoutSeconds": 600,
     "fallbackTaskType": "scale-up",
     "fallbackConfig": { "replicaDelta": 1 }
+  },
+  "prometheus": {
+    "baseUrl": "http://your-prometheus:9090",
+    "engine": "sglang",
+    "queryOverrides": {},
+    "defaultLabels": { "namespace": "tenant-xyz" },
+    "timeoutMs": 10000,
+    "bearerToken": null,
+    "username": null,
+    "password": null
   }
 }
 ```
 
 The `fallbackConfig` is used when the Planner fails or times out — a safe default action rather than no action.
+
+**Prometheus config fields:**
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `baseUrl` | **Yes** | Prometheus HTTP API base URL |
+| `engine` | No | Inference engine: `"vllm"` (default) or `"sglang"` — selects the PromQL query map |
+| `queryOverrides` | No | Per-metric PromQL overrides (e.g., `{ "ttft": "custom_query..." }`) |
+| `defaultLabels` | No | Labels injected into every PromQL query (e.g., `{ "namespace": "..." }`) |
+| `timeoutMs` | No | HTTP request timeout (default: 10000ms) |
+| `bearerToken` | No | Bearer token for auth (takes precedence over basic auth) |
+| `username` / `password` | No | Basic auth credentials |
 
 ---
 
