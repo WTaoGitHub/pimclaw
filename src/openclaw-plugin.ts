@@ -38,6 +38,9 @@ import {
   getPromQLMap,
 } from './master/prometheus-client.js';
 import type { PrometheusClientOptions, InferenceEngine, PrometheusQueryMap } from './master/prometheus-client.js';
+import { EngineMcpClient } from './master/engine-mcp-client.js';
+import type { EngineMcpConfig } from './master/engine-mcp-client.js';
+import { TaskExecutor } from './master/task-executor.js';
 import type { Task } from './types/index.js';
 import { v4 as uuidv4 } from 'uuid';
 
@@ -120,6 +123,8 @@ let taskRecorder: TaskStatusRecorder | null = null;
 let scheduler: SchedulerAgent | null = null;
 let anomalyReceiver: AnomalyReceiver | null = null;
 let prometheusClient: PrometheusClient | null = null;
+let engineMcpClient: EngineMcpClient | null = null;
+let taskExecutor: TaskExecutor | null = null;
 let prometheusQueryOverrides: Record<string, string> = {};
 let prometheusDefaultLabels: Record<string, string> = {};
 let activePromQLMap: PrometheusQueryMap = vllmPromQLMap;
@@ -366,7 +371,7 @@ function createPimClawService(): OpenClawPluginService {
       );
 
       // 4. Scheduler — polls for ready tasks, spawns Workers
-      scheduler = new SchedulerAgent(registry, taskRecorder);
+      scheduler = new SchedulerAgent(registry, taskRecorder, undefined, taskExecutor ?? undefined);
       await scheduler.initialize();
       scheduler.run().catch((err) =>
         ctx.logger.error(`[PimClaw] Scheduler error: ${err}`),
@@ -391,6 +396,34 @@ function createPimClawService(): OpenClawPluginService {
         ctx.logger.warn('[PimClaw] No prometheus.baseUrl configured — pimclaw_query_metrics will be unavailable');
       }
 
+      // 6. EngineMcpClient + TaskExecutor — for Worker execution via qianjin-xuntui MCP
+      const engineCfg = (config as any)?.engineMcp;
+      if (engineCfg?.sseUrl && engineCfg?.username && engineCfg?.password) {
+        try {
+          engineMcpClient = new EngineMcpClient({
+            sseUrl: engineCfg.sseUrl,
+            username: engineCfg.username,
+            password: engineCfg.password,
+            tenantId: engineCfg.tenantId,
+            tokenRefreshMarginMs: engineCfg.tokenRefreshMarginMs,
+          });
+          await engineMcpClient.connect();
+          taskExecutor = new TaskExecutor(engineMcpClient);
+          // Hot-wire the executor into the already-created scheduler
+          if (scheduler) {
+            (scheduler as any).taskExecutor = taskExecutor;
+          }
+          ctx.logger.info(`[PimClaw] Engine MCP connected → ${engineCfg.sseUrl}`);
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          ctx.logger.error(`[PimClaw] Engine MCP connection failed: ${msg}`);
+          engineMcpClient = null;
+          taskExecutor = null;
+        }
+      } else {
+        ctx.logger.warn('[PimClaw] No engineMcp config — Worker task execution will be unavailable');
+      }
+
       ctx.logger.info(
         '[PimClaw] Components started (TaskRecorder → AnomalyReceiver → Scheduler)',
       );
@@ -411,6 +444,11 @@ function createPimClawService(): OpenClawPluginService {
         await taskRecorder.persist();
         taskRecorder = null;
       }
+      if (engineMcpClient) {
+        await engineMcpClient.disconnect();
+        engineMcpClient = null;
+      }
+      taskExecutor = null;
       registry = null;
       prometheusClient = null;
       prometheusQueryOverrides = {};

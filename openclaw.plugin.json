@@ -37,6 +37,17 @@
           "bearerToken": { "type": "string" }
         },
         "required": ["baseUrl"]
+      },
+      "engineMcp": {
+        "type": "object",
+        "properties": {
+          "sseUrl": { "type": "string", "description": "MCP server SSE endpoint URL" },
+          "username": { "type": "string", "description": "Platform login username" },
+          "password": { "type": "string", "description": "Platform login password" },
+          "tenantId": { "type": "string", "description": "Tenant/org ID. If omitted, auto-selects first tenant." },
+          "tokenRefreshMarginMs": { "type": "number", "default": 300000, "description": "Refresh token this many ms before expiry" }
+        },
+        "required": ["sseUrl", "username", "password"]
       }
     }
   },

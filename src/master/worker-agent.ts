@@ -10,6 +10,7 @@
 import { BaseAgent } from './base-agent.js';
 import { ComponentRegistry } from './component-registry.js';
 import { TaskStatusRecorder } from './task-status-recorder.js';
+import { TaskExecutor } from './task-executor.js';
 import { Task, AgentRuntimeStatus } from '../types/index.js';
 
 /**
@@ -19,25 +20,22 @@ import { Task, AgentRuntimeStatus } from '../types/index.js';
 export class WorkerAgent extends BaseAgent {
   private task: Task;
   private taskRecorder: TaskStatusRecorder;
+  private taskExecutor: TaskExecutor | null;
   private executionTimeout: number = 30 * 60 * 1000; // 30 minutes
 
   constructor(
     registry: ComponentRegistry,
     taskRecorder: TaskStatusRecorder,
-    task: Task
+    task: Task,
+    taskExecutor?: TaskExecutor,
   ) {
     super('worker', registry, {
       agentId: `worker-${task.taskId}`,
       agentType: 'worker',
-      mcpServices: {
-        engine: {
-          command: 'node',
-          args: ['path/to/engine-mcp-server.js'],
-        },
-      },
     });
     this.task = task;
     this.taskRecorder = taskRecorder;
+    this.taskExecutor = taskExecutor ?? null;
   }
 
   /**
@@ -134,21 +132,19 @@ export class WorkerAgent extends BaseAgent {
   }
 
   /**
-   * Execute the actual task
+   * Execute the actual task via TaskExecutor → Engine MCP.
    */
   private async executeTask(): Promise<unknown> {
     this.updateAction(
-      `Calling Engine MCP for ${this.task.taskType} on ${this.task.llmDeploymentName}`
+      `Executing ${this.task.taskType} on ${this.task.llmDeploymentName}`
     );
 
-    try {
-      // Call Engine MCP with task details
-      const result = await this.callMCPTool('engine', 'execute_deployment_change', {
-        deploymentName: this.task.llmDeploymentName,
-        changeType: this.task.taskType,
-        params: this.task.taskData,
-      });
+    if (!this.taskExecutor) {
+      throw new Error('No TaskExecutor available — Engine MCP not configured');
+    }
 
+    try {
+      const result = await this.taskExecutor.execute(this.task);
       return result;
     } catch (error) {
       throw new Error(

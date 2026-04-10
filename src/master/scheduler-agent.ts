@@ -7,6 +7,7 @@ import { BaseAgent } from './base-agent.js';
 import { ComponentRegistry } from './component-registry.js';
 import { TaskStatusRecorder } from './task-status-recorder.js';
 import { WorkerAgent } from './worker-agent.js';
+import { TaskExecutor } from './task-executor.js';
 import { Task } from '../types/index.js';
 
 /**
@@ -23,11 +24,13 @@ export class SchedulerAgent extends BaseAgent {
   private workers: Map<string, WorkerAgent> = new Map();
   private pollingIntervalMs: number = 5000; // poll every 5 seconds
   private isRunning: boolean = false;
+  private taskExecutor: TaskExecutor | null = null;
 
   constructor(
     registry: ComponentRegistry,
     taskRecorder: TaskStatusRecorder,
-    maxWorkers?: number
+    maxWorkers?: number,
+    taskExecutor?: TaskExecutor,
   ) {
     super('scheduler', registry, {
       agentId: 'scheduler-1',
@@ -37,6 +40,7 @@ export class SchedulerAgent extends BaseAgent {
     if (maxWorkers) {
       this.maxConcurrentWorkers = maxWorkers;
     }
+    this.taskExecutor = taskExecutor ?? null;
   }
 
   /**
@@ -115,7 +119,7 @@ export class SchedulerAgent extends BaseAgent {
       this.updateAction(`Scheduling task ${task.taskId}`);
 
       // Create and track a Worker Agent
-      const worker = new WorkerAgent(this.registry, this.taskRecorder, task);
+      const worker = new WorkerAgent(this.registry, this.taskRecorder, task, this.taskExecutor ?? undefined);
       this.workers.set(task.taskId, worker);
 
       // Initialize worker (registers in registry, attempts MCP connections)
