@@ -523,7 +523,7 @@ function buildPimClawTools() {
   const queryMetricsTool = () => ({
     name: 'pimclaw_query_metrics',
     description:
-      'Query Prometheus for vLLM metrics (TTFT, TPOT, QPS, throughput, GPU utilization, error rate). Called by the Head Agent for anomaly detection.',
+      'Query Prometheus for inference metrics (TTFT, TPOT, QPS, throughput, GPU utilization, error rate). Use rangeMinutes to get time-series data as [timestamp, value] pairs for trend analysis. Called by the Head Agent every 5 minutes.',
     parameters: {
       type: 'object' as const,
       properties: {
@@ -539,7 +539,7 @@ function buildPimClawTools() {
         },
         rangeMinutes: {
           type: 'number',
-          description: 'If set, return time-series range data for trend detection instead of an instant value',
+          description: 'Return time-series [timestamp, value] pairs over this many minutes (step ~15s). Use 5 to match the Head Agent cron interval.',
         },
       },
     },
