@@ -57,6 +57,13 @@
           "env": { "type": "object", "additionalProperties": { "type": "string" }, "description": "Extra env vars for the Python process" }
         },
         "required": ["serverScriptPath"]
+      },
+      "simMcp": {
+        "type": "object",
+        "properties": {
+          "sseUrl": { "type": "string", "description": "Hisim MCP server SSE endpoint URL" }
+        },
+        "required": ["sseUrl"]
       }
     }
   },
@@ -74,7 +81,14 @@
       "pimclaw_revoke_task",
       "pimclaw_query_metrics",
       "pimclaw_query_perfllm",
-      "pimclaw_get_perfllm_schema"
+      "pimclaw_get_perfllm_schema",
+      "pimclaw_sim_register_hardware",
+      "pimclaw_sim_list_hardware",
+      "pimclaw_sim_start",
+      "pimclaw_sim_stop",
+      "pimclaw_sim_status",
+      "pimclaw_sim_benchmark",
+      "pimclaw_sim_dataset_info"
     ]
   }
 }

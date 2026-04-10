@@ -161,13 +161,35 @@ Examples:
 - What TTFT/TPOT did we achieve with N replicas, dtype X, quantization Y?
 - What's the best-performing config for model Z on device type D?
 
-### Simulator MCP — Performance Simulation
-Simulate how a configuration would perform under given conditions:
-- "If we scale to 4 replicas with FP16, what TTFT do we expect at 200 QPS?"
-- "If we switch from FP16 to INT8, how does throughput change?"
-- "What's the minimum replica count to sustain 500 QPS under 200ms TTFT?"
+### Simulator MCP — Performance Simulation (pimclaw_sim_* tools)
+Simulate how a configuration would perform using hardware-aware SGLang simulation
+via the Hisim MCP server. Available tools:
 
-Use this to **validate and compare candidates** before committing.
+**Hardware management:**
+- `pimclaw_sim_list_hardware` — list registered hardware accelerators
+- `pimclaw_sim_register_hardware` — register new hardware (name, vendor, hbm_capacity_gb,
+  hbm_bandwidth_gb, fp16_tflops, num_devices, etc.)
+
+**Simulation server:**
+- `pimclaw_sim_start` — start simulation server (model_path, hardware_name, database_path,
+  tp_size, dp_size, data_type: FP16/BF16/FP8/INT8, etc.)
+- `pimclaw_sim_stop` — stop simulation server
+- `pimclaw_sim_status` — check if simulation server is running
+
+**Benchmarking:**
+- `pimclaw_sim_benchmark` — run benchmark serving (model, dataset_name: random/sharegpt/hisim-collection,
+  num_prompts, random_input_len, random_output_len, request_rate, max_concurrency)
+  Returns: mean_ttft_ms, mean_tpot_ms, output_throughput, request_throughput, mean_e2e_latency_ms
+- `pimclaw_sim_dataset_info` — preview dataset info before benchmarking
+
+**Simulation workflow:**
+1. Call `pimclaw_sim_list_hardware` to check if the target hardware is registered
+2. If not registered, call `pimclaw_sim_register_hardware` with the hardware specs
+3. Call `pimclaw_sim_start` with the candidate config (model, hardware, tp_size, data_type, etc.)
+4. Call `pimclaw_sim_benchmark` with representative workload parameters
+5. Record the results (TTFT, TPOT, throughput)
+6. Call `pimclaw_sim_stop` to release resources
+7. Repeat steps 3-6 for each candidate config, then compare results
 
 ### Web Search — Known Issues & Solutions
 Search for known issues, best practices, or vendor advisories:
@@ -187,8 +209,13 @@ Use this **sparingly** — only when Perf and Simulator data is insufficient.
    anomaly's deployment (model_name, engine_name, device_type). Find historical
    configs that performed well under similar conditions. Identify 2-3 candidates.
 
-3. **Simulate candidates.** Run each candidate through Simulator MCP with the
-   current load parameters. Compare predicted TTFT, TPOT, throughput.
+3. **Simulate candidates.** For each candidate config:
+   a. Call `pimclaw_sim_list_hardware` to verify hardware is registered
+   b. Call `pimclaw_sim_start` with the candidate's model, hardware, tp_size, data_type
+   c. Call `pimclaw_sim_benchmark` with workload matching the anomaly's QPS/load
+   d. Record mean_ttft_ms, mean_tpot_ms, output_throughput from the results
+   e. Call `pimclaw_sim_stop` before testing the next candidate
+   Compare predicted TTFT, TPOT, throughput across all candidates.
 
 4. **Select the best config.** Choose the candidate with the best predicted
    performance that also has historical validation.
@@ -217,7 +244,10 @@ Call pimclaw_plan_task:
 ## Important Rules
 
 - **Always query pimclaw_query_perfllm first.** Don't guess configurations — use data.
-- **Always simulate before submitting.** Don't deploy unvalidated configs.
+- **Always simulate before submitting.** Use pimclaw_sim_start → pimclaw_sim_benchmark →
+  pimclaw_sim_stop for each candidate. Don't deploy unvalidated configs.
+- **Always stop the simulator.** Call pimclaw_sim_stop after each benchmark run to
+  release resources before starting the next candidate.
 - **Prefer conservative changes.** Scale up by the minimum needed, not the maximum
   possible. Over-provisioning wastes resources.
 - **Include evidence.** The reasoning, perfEvidence, and simulationResults fields

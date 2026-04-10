@@ -42,6 +42,8 @@ import { EngineMcpClient } from './master/engine-mcp-client.js';
 import type { EngineMcpConfig } from './master/engine-mcp-client.js';
 import { PerfMcpClient } from './master/perf-mcp-client.js';
 import type { PerfMcpConfig } from './master/perf-mcp-client.js';
+import { SimMcpClient } from './master/sim-mcp-client.js';
+import type { SimMcpConfig } from './master/sim-mcp-client.js';
 import { TaskExecutor } from './master/task-executor.js';
 import type { Task } from './types/index.js';
 import { v4 as uuidv4 } from 'uuid';
@@ -127,6 +129,7 @@ let anomalyReceiver: AnomalyReceiver | null = null;
 let prometheusClient: PrometheusClient | null = null;
 let engineMcpClient: EngineMcpClient | null = null;
 let perfMcpClient: PerfMcpClient | null = null;
+let simMcpClient: SimMcpClient | null = null;
 let taskExecutor: TaskExecutor | null = null;
 let prometheusQueryOverrides: Record<string, string> = {};
 let prometheusDefaultLabels: Record<string, string> = {};
@@ -447,6 +450,24 @@ function createPimClawService(): OpenClawPluginService {
         ctx.logger.warn('[PimClaw] No perfMcp.serverScriptPath configured — pimclaw_query_perfllm will be unavailable');
       }
 
+      // 8. SimMcpClient — for Planner simulation-based config validation
+      const simCfg = (config as any)?.simMcp;
+      if (simCfg?.sseUrl) {
+        try {
+          simMcpClient = new SimMcpClient({
+            sseUrl: simCfg.sseUrl,
+          });
+          await simMcpClient.connect();
+          ctx.logger.info(`[PimClaw] Sim MCP connected → ${simCfg.sseUrl}`);
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          ctx.logger.error(`[PimClaw] Sim MCP connection failed: ${msg}`);
+          simMcpClient = null;
+        }
+      } else {
+        ctx.logger.warn('[PimClaw] No simMcp.sseUrl configured — pimclaw_sim_* tools will be unavailable');
+      }
+
       ctx.logger.info(
         '[PimClaw] Components started (TaskRecorder → AnomalyReceiver → Scheduler)',
       );
@@ -474,6 +495,10 @@ function createPimClawService(): OpenClawPluginService {
       if (perfMcpClient) {
         await perfMcpClient.disconnect();
         perfMcpClient = null;
+      }
+      if (simMcpClient) {
+        await simMcpClient.disconnect();
+        simMcpClient = null;
       }
       taskExecutor = null;
       registry = null;
@@ -944,6 +969,151 @@ function buildPimClawTools() {
     },
   });
 
+  // ── Simulator MCP Tools (Hisim hardware-aware simulation) ────────────────
+
+  /** Helper: create a sim tool that proxies to SimMcpClient.callTool() */
+  function simTool(
+    name: string,
+    hisimToolName: string,
+    description: string,
+    parameters: Record<string, unknown>,
+  ) {
+    return () => ({
+      name,
+      description,
+      parameters,
+      async execute(_sessionId: string, params: Record<string, unknown>) {
+        if (!simMcpClient) {
+          return {
+            output: JSON.stringify({
+              error: 'Sim MCP not configured. Set simMcp.sseUrl in plugin config.',
+            }),
+          };
+        }
+        try {
+          const result = await simMcpClient.callTool(hisimToolName, params);
+          return { output: JSON.stringify(result) };
+        } catch (err) {
+          return {
+            output: JSON.stringify({
+              error: err instanceof Error ? err.message : String(err),
+            }),
+          };
+        }
+      },
+    });
+  }
+
+  const simRegisterHardwareTool = simTool(
+    'pimclaw_sim_register_hardware',
+    'register_hardware',
+    'Register a hardware accelerator with performance specs for simulation.',
+    {
+      type: 'object' as const,
+      properties: {
+        name: { type: 'string', description: 'Hardware name (e.g. "NVIDIA H800")' },
+        vendor: { type: 'string', description: 'Hardware vendor (e.g. "NVIDIA")' },
+        hbm_capacity_gb: { type: 'number', description: 'HBM capacity in GB' },
+        hbm_bandwidth_gb: { type: 'number', description: 'HBM bandwidth in GB/s' },
+        fp16_tflops: { type: 'number', description: 'FP16 TFLOPS' },
+        fp32_tflops: { type: 'number', description: 'FP32 TFLOPS' },
+        fp64_tflops: { type: 'number', description: 'FP64 TFLOPS' },
+        int8_tflops: { type: 'number', description: 'INT8 TFLOPS' },
+        fp8_tflops: { type: 'number', description: 'FP8 TFLOPS' },
+        bf16_tflops: { type: 'number', description: 'BF16 TFLOPS' },
+        num_devices: { type: 'number', description: 'Number of devices' },
+        device_alias: { type: 'array', items: { type: 'string' }, description: 'Device aliases' },
+        inter_node_bandwidth_gb: { type: 'number', description: 'Inter-node bandwidth in GB/s' },
+        intra_node_bandwidth_gb: { type: 'number', description: 'Intra-node bandwidth in GB/s' },
+      },
+      required: ['name', 'vendor', 'hbm_capacity_gb', 'hbm_bandwidth_gb'],
+    },
+  );
+
+  const simListHardwareTool = simTool(
+    'pimclaw_sim_list_hardware',
+    'list_all_hardware',
+    'List all registered hardware accelerators available for simulation.',
+    { type: 'object' as const, properties: {} },
+  );
+
+  const simStartTool = simTool(
+    'pimclaw_sim_start',
+    'start_simulation_server',
+    'Start SGLang simulation server with hardware-aware configuration. Must register hardware first.',
+    {
+      type: 'object' as const,
+      properties: {
+        model_path: { type: 'string', description: 'Model path (e.g. "Qwen/Qwen2.5-7B-Instruct")' },
+        hardware_name: { type: 'string', description: 'Registered hardware name (e.g. "NVIDIA H800")' },
+        database_path: { type: 'string', description: 'Hardware performance database path' },
+        port: { type: 'number', description: 'Service port (default: 8001)' },
+        tp_size: { type: 'number', description: 'Tensor parallelism size' },
+        ep_size: { type: 'number', description: 'Expert parallelism size' },
+        dp_size: { type: 'number', description: 'Data parallelism size' },
+        data_type: { type: 'string', description: 'Data type: FP16, FP32, BF16, FP8, INT8' },
+        prefill_scale_factor: { type: 'number', description: 'Prefill latency scale factor' },
+        decode_scale_factor: { type: 'number', description: 'Decode latency scale factor' },
+        database_mode: { type: 'string', description: 'SILICON or SIMULATION' },
+        xgb_model_path: { type: 'string', description: 'XGBoost model path for prediction' },
+        skip_warmup: { type: 'boolean', description: 'Skip server warmup (default: true)' },
+      },
+      required: ['model_path', 'hardware_name', 'database_path'],
+    },
+  );
+
+  const simStopTool = simTool(
+    'pimclaw_sim_stop',
+    'stop_simulation_server',
+    'Stop the running simulation server.',
+    { type: 'object' as const, properties: {} },
+  );
+
+  const simStatusTool = simTool(
+    'pimclaw_sim_status',
+    'get_simulation_server_status',
+    'Get the current simulation server status (running, PID, port, model).',
+    { type: 'object' as const, properties: {} },
+  );
+
+  const simBenchmarkTool = simTool(
+    'pimclaw_sim_benchmark',
+    'run_bench_serving',
+    'Run benchmark serving against the simulation server. Returns TTFT, TPOT, throughput, and other performance metrics. Simulation server must be running first.',
+    {
+      type: 'object' as const,
+      properties: {
+        model: { type: 'string', description: 'Model name (should match simulation server model)' },
+        backend: { type: 'string', description: 'Backend type (default: "sglang")' },
+        dataset_name: { type: 'string', description: 'Dataset type: random, sharegpt, hisim-collection' },
+        dataset_path: { type: 'string', description: 'Path to dataset file (for sharegpt/hisim-collection)' },
+        num_prompts: { type: 'number', description: 'Number of prompts (for random dataset)' },
+        random_input_len: { type: 'number', description: 'Input token length (for random dataset)' },
+        random_output_len: { type: 'number', description: 'Output token length (for random dataset)' },
+        request_rate: { type: 'number', description: 'Requests per second (inf = all at once)' },
+        max_concurrency: { type: 'number', description: 'Maximum concurrent requests' },
+        base_url: { type: 'string', description: 'Simulation server base URL (default: "http://127.0.0.1:8001")' },
+      },
+      required: ['model'],
+    },
+  );
+
+  const simDatasetInfoTool = simTool(
+    'pimclaw_sim_dataset_info',
+    'get_bench_serving_dataset_info',
+    'Preview dataset information (token counts, prompt lengths) without running a benchmark.',
+    {
+      type: 'object' as const,
+      properties: {
+        dataset_name: { type: 'string', description: 'Dataset type: random, sharegpt, hisim-collection' },
+        dataset_path: { type: 'string', description: 'Path to dataset file' },
+        model: { type: 'string', description: 'Model name for tokenization' },
+        num_prompts: { type: 'number', description: 'Number of prompts to preview' },
+      },
+      required: ['dataset_name', 'model'],
+    },
+  );
+
   return [
     submitAnomaliesTool,
     planTaskTool,
@@ -951,6 +1121,13 @@ function buildPimClawTools() {
     queryMetricsTool,
     queryPerfllmTool,
     getPerfllmSchemaTool,
+    simRegisterHardwareTool,
+    simListHardwareTool,
+    simStartTool,
+    simStopTool,
+    simStatusTool,
+    simBenchmarkTool,
+    simDatasetInfoTool,
     listComponentsTool,
     componentStatusTool,
     healthTool,
