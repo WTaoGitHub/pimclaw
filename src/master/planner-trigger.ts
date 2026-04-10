@@ -4,6 +4,7 @@
  */
 
 import type { ValidatedEvent } from './anomaly-receiver.js';
+import type { ComponentRegistry } from './component-registry.js';
 
 export interface OpenClawAgentApi {
   triggerAgent(agentId: string, options: {
@@ -35,10 +36,26 @@ const DEFAULT_CONFIG: PlannerTriggerConfig = {
 export class PlannerTrigger {
   private openclawApi: OpenClawAgentApi;
   private config: PlannerTriggerConfig;
+  private readonly registry: ComponentRegistry | null;
+  private readonly agentId = 'planner-trigger';
 
-  constructor(openclawApi: OpenClawAgentApi, config?: Partial<PlannerTriggerConfig>) {
+  constructor(openclawApi: OpenClawAgentApi, config?: Partial<PlannerTriggerConfig>, registry?: ComponentRegistry) {
     this.openclawApi = openclawApi;
     this.config = { ...DEFAULT_CONFIG, ...config };
+    this.registry = registry ?? null;
+
+    if (this.registry) {
+      this.registry.registerAgent({
+        agentId: this.agentId,
+        agentType: 'trigger',
+        status: 'Listening',
+        startedAt: new Date(),
+        lastActivityAt: new Date(),
+        mcpConnections: {},
+        counters: { triggersAttempted: 0, triggersSucceeded: 0, triggersFailed: 0 },
+        errors: { errorCount: 0, lastError: undefined, lastErrorAt: undefined },
+      });
+    }
   }
 
   async trigger(event: ValidatedEvent, taskId: string): Promise<void> {

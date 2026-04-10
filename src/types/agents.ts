@@ -2,7 +2,7 @@
  * Agent type definitions for PimClaw
  */
 
-export type AgentType = 'head' | 'scheduler' | 'recorder' | 'worker';
+export type AgentType = 'head' | 'scheduler' | 'recorder' | 'worker' | 'receiver' | 'trigger';
 export type AgentStatus = 'Starting' | 'Listening' | 'Stopping' | 'Stopped';
 export type MCPConnectionStatus = 'connected' | 'disconnected' | 'error';
 
@@ -55,6 +55,17 @@ export interface AgentCounters {
   startedAt?: Date;
   tasksCompleted?: number;
   tasksFailed?: number;
+
+  // Receiver (AnomalyReceiver)
+  eventsReceived?: number;
+  eventsValidated?: number;
+  eventsRejected?: number;
+  eventsDeduplicated?: number;
+
+  // Trigger (PlannerTrigger)
+  triggersAttempted?: number;
+  triggersSucceeded?: number;
+  triggersFailed?: number;
 }
 
 /**

@@ -4,6 +4,7 @@
  */
 
 import { Task, TaskStatus } from '../types/index.js';
+import { ComponentRegistry } from './component-registry.js';
 import fs from 'fs/promises';
 import path from 'path';
 
@@ -14,6 +15,8 @@ import path from 'path';
 export class TaskStatusRecorder {
   private tasks: Map<string, Task> = new Map();
   private readonly storagePath: string;
+  private readonly registry: ComponentRegistry | null;
+  private readonly agentId = 'task-status-recorder';
   private readonly allowedTransitions: Record<TaskStatus, TaskStatus[]> = {
     planning: ['ready', 'expired'],
     ready: ['scheduling', 'expired'],
@@ -25,14 +28,29 @@ export class TaskStatusRecorder {
     expired: [],
   };
 
-  constructor(storagePath: string = './pimclaw-tasks') {
+  constructor(storagePath: string = './pimclaw-tasks', registry?: ComponentRegistry) {
     this.storagePath = storagePath;
+    this.registry = registry ?? null;
   }
 
   /**
    * Initialize the recorder, loading persisted tasks from storage
    */
   async initialize(): Promise<void> {
+    // Register with ComponentRegistry if provided
+    if (this.registry) {
+      this.registry.registerAgent({
+        agentId: this.agentId,
+        agentType: 'recorder',
+        status: 'Starting',
+        startedAt: new Date(),
+        lastActivityAt: new Date(),
+        mcpConnections: {},
+        counters: { totalTasks: 0, readyTasks: 0, runningTasks: 0, doneTasks: 0, failedTasks: 0, expiredTasks: 0 },
+        errors: { errorCount: 0, lastError: undefined, lastErrorAt: undefined },
+      });
+    }
+
     try {
       const tasksFile = path.join(this.storagePath, 'tasks.json');
       const data = await fs.readFile(tasksFile, 'utf-8');
@@ -75,6 +93,11 @@ export class TaskStatusRecorder {
     } catch {
       // No stored file yet, start fresh
       await fs.mkdir(this.storagePath, { recursive: true });
+    }
+
+    // Mark as active
+    if (this.registry) {
+      this.registry.updateAgentStatus(this.agentId, 'Listening');
     }
   }
 

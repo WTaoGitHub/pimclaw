@@ -9,6 +9,7 @@
 
 import { TaskStatusRecorder } from './task-status-recorder.js';
 import { PlannerTrigger } from './planner-trigger.js';
+import { ComponentRegistry } from './component-registry.js';
 import { Task } from '../types/index.js';
 import { v4 as uuidv4 } from 'uuid';
 
@@ -58,17 +59,34 @@ export class AnomalyReceiver {
   private config: AnomalyReceiverConfig;
   private hooks: AnomalyReceiverHooks;
   private recentEvents: Map<string, Date> = new Map();
+  private readonly registry: ComponentRegistry | null;
+  private readonly agentId = 'anomaly-receiver';
 
   constructor(
     taskRecorder: TaskStatusRecorder,
     plannerTrigger: PlannerTrigger,
     config?: Partial<AnomalyReceiverConfig>,
     hooks?: AnomalyReceiverHooks,
+    registry?: ComponentRegistry,
   ) {
     this.taskRecorder = taskRecorder;
     this.plannerTrigger = plannerTrigger;
     this.config = { ...DEFAULT_CONFIG, ...config };
     this.hooks = hooks ?? {};
+    this.registry = registry ?? null;
+
+    if (this.registry) {
+      this.registry.registerAgent({
+        agentId: this.agentId,
+        agentType: 'receiver',
+        status: 'Listening',
+        startedAt: new Date(),
+        lastActivityAt: new Date(),
+        mcpConnections: {},
+        counters: { eventsReceived: 0, eventsValidated: 0, eventsRejected: 0, eventsDeduplicated: 0 },
+        errors: { errorCount: 0, lastError: undefined, lastErrorAt: undefined },
+      });
+    }
   }
 
   async receive(events: AnomalyEvent[]): Promise<ValidatedEvent[]> {

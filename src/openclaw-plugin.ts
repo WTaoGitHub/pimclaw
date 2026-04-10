@@ -227,7 +227,6 @@ function createCliPlannerAgentApi(ctx: OpenClawPluginServiceContext): OpenClawAg
         ],
         {
           cwd: options.workspaceDir ?? ctx.workspaceDir,
-          env: process.env,
           timeout: options.runTimeoutSeconds * 1000,
         },
       );
@@ -330,6 +329,7 @@ function createPimClawService(): OpenClawPluginService {
       registry = new ComponentRegistry();
       taskRecorder = new TaskStatusRecorder(
         `${ctx.stateDir}/pimclaw-tasks`,
+        registry,
       );
       await taskRecorder.initialize();
 
@@ -352,7 +352,7 @@ function createPimClawService(): OpenClawPluginService {
         agentId: plannerConfig.agentId ?? 'pimclaw-planner',
         timeoutSeconds: plannerConfig.timeoutSeconds ?? 600,
         workspaceDir: plannerWorkspaceDir,
-      });
+      }, registry);
 
       ctx.logger.info(
         `[PimClaw] Dedicated agent workspaces ready: head=${headWorkspaceDir}, planner=${plannerWorkspaceDir}`,
@@ -374,6 +374,7 @@ function createPimClawService(): OpenClawPluginService {
             await applyFallbackPlan(taskId, `planner trigger failed: ${message}`);
           },
         },
+        registry,
       );
 
       // 4. Scheduler — polls for ready tasks, spawns Workers
@@ -596,7 +597,7 @@ function buildPimClawTools() {
   const submitAnomaliesTool = () => ({
     name: 'pimclaw_submit_anomalies',
     description:
-      'Submit detected anomaly events for task planning. Called by the PimClaw Head Agent after analyzing Grafana metrics.',
+      'Submit detected anomaly events for task planning. Called by the PimClaw Head Agent after analyzing Prometheus metrics.',
     parameters: {
       type: 'object' as const,
       properties: {
