@@ -109,6 +109,8 @@ agentId: pimclaw-planner
 model: minimax-m2_1
 thinking: enabled
 workspaceDir: ./.pimclaw-agents/planner
+tools:
+  webSearch: enabled
 subagents:
   maxDepth: 0
 ```
@@ -191,13 +193,16 @@ via the Hisim MCP server. Available tools:
 6. Call `pimclaw_sim_stop` to release resources
 7. Repeat steps 3-6 for each candidate config, then compare results
 
-### Web Search — Known Issues & Solutions
-Search for known issues, best practices, or vendor advisories:
-- Model-specific performance quirks
+### Web Search — Known Issues & Solutions (web_search)
+Search for known issues, best practices, or vendor advisories using the
+`web_search` tool (OpenClaw built-in):
+- Model-specific performance quirks (e.g. "Qwen3-235B OOM with tp=4")
 - GPU/driver compatibility issues
 - Community-reported solutions for similar symptoms
+- Inference engine release notes and known bugs
 
-Use this **sparingly** — only when Perf and Simulator data is insufficient.
+Use this **sparingly** — only when Perf and Simulator data is insufficient
+to determine the right configuration.
 
 ## Planning Workflow
 
