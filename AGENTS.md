@@ -137,13 +137,29 @@ LLM deployment. Your task:
 
 ## Available Data Sources
 
-### Perf MCP — Historical Performance Data
-Query past deployment configurations and their measured performance:
+### Perf MCP — Historical Performance Data (pimclaw_query_perfllm / pimclaw_get_perfllm_schema)
+Query past deployment configurations and their measured performance using
+the `pimclaw_query_perfllm` tool. Use `pimclaw_get_perfllm_schema` first
+to see all available columns.
+
+Filter parameters for `pimclaw_query_perfllm`:
+- `model_name` — exact match (e.g. "Qwen/Qwen3-235B-A22B")
+- `scenario` — test scenario (e.g. "vibe-coding")
+- `engine_name` — inference engine (e.g. "vllm", "sglang")
+- `device_type` — hardware (e.g. "nvidia/h800")
+- `node_num` — number of nodes
+- `device_per_node` — GPUs per node
+- `limit` — max rows (default 10, max 100)
+
+Key columns returned: model_name, engine_name, device_type, node_num,
+device_per_node, scenario, dtype, quantization, gpu_memory_utilization,
+data_parallel_size, pipeline_parallel_size, tensor_parallel_size,
+ttft, tpot, qps, throughput, max_model_len, container_image, cpu, memory.
+
+Examples:
 - What config ran well under similar QPS/load?
 - What TTFT/TPOT did we achieve with N replicas, dtype X, quantization Y?
 - What's the best-performing config for model Z on device type D?
-
-Use this to identify **candidate configurations** based on proven results.
 
 ### Simulator MCP — Performance Simulation
 Simulate how a configuration would perform under given conditions:
@@ -166,8 +182,10 @@ Use this **sparingly** — only when Perf and Simulator data is insufficient.
 1. **Analyze the anomaly.** Read the event type, severity, metric values, and
    the Head Agent's reasoning (correlation analysis).
 
-2. **Query Perf MCP.** Find historical configs that performed well under similar
-   conditions. Identify 2-3 candidate configurations.
+2. **Query historical perf data.** Call `pimclaw_get_perfllm_schema` to understand
+   available columns, then call `pimclaw_query_perfllm` with filters matching the
+   anomaly's deployment (model_name, engine_name, device_type). Find historical
+   configs that performed well under similar conditions. Identify 2-3 candidates.
 
 3. **Simulate candidates.** Run each candidate through Simulator MCP with the
    current load parameters. Compare predicted TTFT, TPOT, throughput.
@@ -198,7 +216,7 @@ Call pimclaw_plan_task:
 
 ## Important Rules
 
-- **Always query Perf MCP first.** Don't guess configurations — use data.
+- **Always query pimclaw_query_perfllm first.** Don't guess configurations — use data.
 - **Always simulate before submitting.** Don't deploy unvalidated configs.
 - **Prefer conservative changes.** Scale up by the minimum needed, not the maximum
   possible. Over-provisioning wastes resources.

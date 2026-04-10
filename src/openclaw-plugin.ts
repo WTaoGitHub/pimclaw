@@ -40,6 +40,8 @@ import {
 import type { PrometheusClientOptions, InferenceEngine, PrometheusQueryMap } from './master/prometheus-client.js';
 import { EngineMcpClient } from './master/engine-mcp-client.js';
 import type { EngineMcpConfig } from './master/engine-mcp-client.js';
+import { PerfMcpClient } from './master/perf-mcp-client.js';
+import type { PerfMcpConfig } from './master/perf-mcp-client.js';
 import { TaskExecutor } from './master/task-executor.js';
 import type { Task } from './types/index.js';
 import { v4 as uuidv4 } from 'uuid';
@@ -124,6 +126,7 @@ let scheduler: SchedulerAgent | null = null;
 let anomalyReceiver: AnomalyReceiver | null = null;
 let prometheusClient: PrometheusClient | null = null;
 let engineMcpClient: EngineMcpClient | null = null;
+let perfMcpClient: PerfMcpClient | null = null;
 let taskExecutor: TaskExecutor | null = null;
 let prometheusQueryOverrides: Record<string, string> = {};
 let prometheusDefaultLabels: Record<string, string> = {};
@@ -424,6 +427,26 @@ function createPimClawService(): OpenClawPluginService {
         ctx.logger.warn('[PimClaw] No engineMcp config — Worker task execution will be unavailable');
       }
 
+      // 7. PerfMcpClient — for Planner historical performance queries
+      const perfCfg = (config as any)?.perfMcp;
+      if (perfCfg?.serverScriptPath) {
+        try {
+          perfMcpClient = new PerfMcpClient({
+            pythonPath: perfCfg.pythonPath,
+            serverScriptPath: perfCfg.serverScriptPath,
+            env: perfCfg.env,
+          });
+          await perfMcpClient.connect();
+          ctx.logger.info(`[PimClaw] Perf MCP connected → ${perfCfg.serverScriptPath}`);
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          ctx.logger.error(`[PimClaw] Perf MCP connection failed: ${msg}`);
+          perfMcpClient = null;
+        }
+      } else {
+        ctx.logger.warn('[PimClaw] No perfMcp.serverScriptPath configured — pimclaw_query_perfllm will be unavailable');
+      }
+
       ctx.logger.info(
         '[PimClaw] Components started (TaskRecorder → AnomalyReceiver → Scheduler)',
       );
@@ -447,6 +470,10 @@ function createPimClawService(): OpenClawPluginService {
       if (engineMcpClient) {
         await engineMcpClient.disconnect();
         engineMcpClient = null;
+      }
+      if (perfMcpClient) {
+        await perfMcpClient.disconnect();
+        perfMcpClient = null;
       }
       taskExecutor = null;
       registry = null;
@@ -849,11 +876,81 @@ function buildPimClawTools() {
     },
   });
 
+  // ── Perf MCP Tools (perfllm historical data) ────────────────────────────
+
+  const queryPerfllmTool = () => ({
+    name: 'pimclaw_query_perfllm',
+    description:
+      'Query the perfllm database for historical LLM performance benchmark data. ' +
+      'Returns deployment configs and their measured TTFT, TPOT, QPS, throughput. ' +
+      'Called by the Planner Agent to find candidate configurations.',
+    parameters: {
+      type: 'object' as const,
+      properties: {
+        model_name: { type: 'string', description: 'Filter by model name (e.g. Qwen/Qwen3-235B-A22B)' },
+        scenario: { type: 'string', description: 'Filter by test scenario (e.g. vibe-coding)' },
+        engine_name: { type: 'string', description: 'Filter by inference engine (e.g. vllm, sglang)' },
+        device_type: { type: 'string', description: 'Filter by hardware type (e.g. nvidia/h800)' },
+        node_num: { type: 'number', description: 'Filter by number of nodes' },
+        device_per_node: { type: 'number', description: 'Filter by devices per node' },
+        limit: { type: 'number', description: 'Max rows to return (default 10, max 100)' },
+      },
+    },
+    async execute(_sessionId: string, params: Record<string, unknown>) {
+      if (!perfMcpClient) {
+        return {
+          output: JSON.stringify({
+            error: 'Perf MCP not configured. Set perfMcp.serverScriptPath in plugin config.',
+          }),
+        };
+      }
+      try {
+        const result = await perfMcpClient.queryPerfllm(params);
+        return { output: JSON.stringify(result) };
+      } catch (err) {
+        return {
+          output: JSON.stringify({
+            error: err instanceof Error ? err.message : String(err),
+          }),
+        };
+      }
+    },
+  });
+
+  const getPerfllmSchemaTool = () => ({
+    name: 'pimclaw_get_perfllm_schema',
+    description:
+      'Get the schema of the perfllm database table. Shows all available columns, ' +
+      'types, and nullability. Use this to understand what data is available before querying.',
+    parameters: { type: 'object' as const, properties: {} },
+    async execute() {
+      if (!perfMcpClient) {
+        return {
+          output: JSON.stringify({
+            error: 'Perf MCP not configured. Set perfMcp.serverScriptPath in plugin config.',
+          }),
+        };
+      }
+      try {
+        const result = await perfMcpClient.getSchema();
+        return { output: JSON.stringify(result) };
+      } catch (err) {
+        return {
+          output: JSON.stringify({
+            error: err instanceof Error ? err.message : String(err),
+          }),
+        };
+      }
+    },
+  });
+
   return [
     submitAnomaliesTool,
     planTaskTool,
     routeTaskTool,
     queryMetricsTool,
+    queryPerfllmTool,
+    getPerfllmSchemaTool,
     listComponentsTool,
     componentStatusTool,
     healthTool,
