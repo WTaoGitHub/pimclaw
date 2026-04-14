@@ -24,7 +24,7 @@ export interface PimClawConfig {
   };
   prometheus?: {
     baseUrl: string;
-    engine?: 'vllm' | 'sglang';
+    engine?: 'vllm' | 'sglang' | Array<'vllm' | 'sglang'>;
     queryOverrides?: Record<string, string>;
     defaultLabels?: Record<string, string>;
     timeoutMs?: number;

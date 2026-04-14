@@ -125,6 +125,9 @@ export const sglangPromQLMap: PrometheusQueryMap = {
 /** Supported inference engine types for PromQL map selection. */
 export type InferenceEngine = 'vllm' | 'sglang';
 
+/** All supported inference engines. */
+export const ALL_ENGINES: readonly InferenceEngine[] = ['vllm', 'sglang'];
+
 /** Get the PromQL map for the given inference engine. */
 export function getPromQLMap(engine: InferenceEngine): PrometheusQueryMap {
   switch (engine) {
@@ -134,6 +137,30 @@ export function getPromQLMap(engine: InferenceEngine): PrometheusQueryMap {
     default:
       return vllmPromQLMap;
   }
+}
+
+/**
+ * Parse an engine config value (string or array) into a validated InferenceEngine array.
+ * Returns ALL_ENGINES if the value is undefined/null.
+ */
+export function parseEngineConfig(value: unknown): InferenceEngine[] {
+  if (value == null) return [...ALL_ENGINES];
+  const raw = Array.isArray(value) ? value : [value];
+  const valid = raw.filter((e): e is InferenceEngine =>
+    typeof e === 'string' && (ALL_ENGINES as readonly string[]).includes(e),
+  );
+  return valid.length > 0 ? valid : [...ALL_ENGINES];
+}
+
+/** Get the union of all metric names across all engine maps. */
+export function allMetricNames(): string[] {
+  const names = new Set<string>();
+  for (const engine of ALL_ENGINES) {
+    for (const key of Object.keys(getPromQLMap(engine))) {
+      names.add(key);
+    }
+  }
+  return [...names];
 }
 
 /**

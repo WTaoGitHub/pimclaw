@@ -33,11 +33,14 @@ import { PlannerTrigger } from './master/planner-trigger.js';
 import type { OpenClawAgentApi } from './master/planner-trigger.js';
 import {
   PrometheusClient,
-  vllmPromQLMap,
   injectLabels,
   getPromQLMap,
+  parseEngineConfig,
+  allMetricNames,
+  ALL_ENGINES,
 } from './master/prometheus-client.js';
-import type { PrometheusClientOptions, InferenceEngine, PrometheusQueryMap } from './master/prometheus-client.js';
+import type { InferenceEngine, PrometheusQueryMap } from './master/prometheus-client.js';
+import { MetricsStore, extractMetricValue } from './master/metrics-store.js';
 import { EngineMcpClient } from './master/engine-mcp-client.js';
 import type { EngineMcpConfig } from './master/engine-mcp-client.js';
 import { PerfMcpClient } from './master/perf-mcp-client.js';
@@ -133,7 +136,8 @@ let simMcpClient: SimMcpClient | null = null;
 let taskExecutor: TaskExecutor | null = null;
 let prometheusQueryOverrides: Record<string, string> = {};
 let prometheusDefaultLabels: Record<string, string> = {};
-let activePromQLMap: PrometheusQueryMap = vllmPromQLMap;
+let activeEngines: InferenceEngine[] = [...ALL_ENGINES];
+let metricsStore: MetricsStore | null = null;
 let pluginConfig: Record<string, unknown> = {};
 let pluginRuntime: unknown = null;
 let plannerFallbackTaskType: 'scale-up' | 'scale-down' | 'restart' | 'reconfigure' = 'scale-up';
@@ -396,12 +400,16 @@ function createPimClawService(): OpenClawPluginService {
         });
         prometheusQueryOverrides = promCfg.queryOverrides ?? {};
         prometheusDefaultLabels = promCfg.defaultLabels ?? {};
-        const engine: InferenceEngine = promCfg.engine ?? 'vllm';
-        activePromQLMap = getPromQLMap(engine);
-        ctx.logger.info(`[PimClaw] Prometheus client configured → ${promCfg.baseUrl} (engine: ${engine})`);
+        activeEngines = parseEngineConfig(promCfg.engine);
+        ctx.logger.info(`[PimClaw] Prometheus client configured → ${promCfg.baseUrl} (engines: ${activeEngines.join(', ')})`);
       } else {
         ctx.logger.warn('[PimClaw] No prometheus.baseUrl configured — pimclaw_query_metrics will be unavailable');
       }
+
+      // 5b. MetricsStore — ring-buffer for metrics history (max 1000 records, ~185 KB)
+      metricsStore = new MetricsStore(`${ctx.stateDir}`, 1000);
+      await metricsStore.load();
+      ctx.logger.info(`[PimClaw] MetricsStore loaded (${metricsStore.size} existing records)`);
 
       // 6. EngineMcpClient + TaskExecutor — for Worker execution via qianjin-xuntui MCP
       const engineCfg = (config as any)?.engineMcp;
@@ -503,10 +511,14 @@ function createPimClawService(): OpenClawPluginService {
       }
       taskExecutor = null;
       registry = null;
+      if (metricsStore) {
+        await metricsStore.flush();
+        metricsStore = null;
+      }
       prometheusClient = null;
       prometheusQueryOverrides = {};
       prometheusDefaultLabels = {};
-      activePromQLMap = vllmPromQLMap;
+      activeEngines = [...ALL_ENGINES];
       pluginConfig = {};
       pluginRuntime = null;
       pluginLogger = null;
@@ -524,7 +536,7 @@ function buildPimClawTools() {
   const queryMetricsTool = () => ({
     name: 'pimclaw_query_metrics',
     description:
-      'Query Prometheus for inference metrics (TTFT, TPOT, QPS, throughput, GPU utilization, error rate). Use rangeMinutes to get time-series data as [timestamp, value] pairs for trend analysis. Called by the Head Agent every 5 minutes.',
+      'Query Prometheus for inference metrics (TTFT, TPOT, QPS, throughput, GPU utilization, error rate) across all configured inference engines (vllm, sglang). Results are grouped by engine. Use rangeMinutes to get time-series data as [timestamp, value] pairs for trend analysis. Called by the Head Agent every 5 minutes.',
     parameters: {
       type: 'object' as const,
       properties: {
@@ -536,7 +548,15 @@ function buildPimClawTools() {
         },
         deploymentName: {
           type: 'string',
-          description: 'vLLM model_name label to filter by',
+          description: 'model_name label to filter by',
+        },
+        engine: {
+          oneOf: [
+            { type: 'string', enum: ['vllm', 'sglang'] },
+            { type: 'array', items: { type: 'string', enum: ['vllm', 'sglang'] } },
+          ],
+          description:
+            'Filter to specific engine(s). Accepts a single engine name or an array. Default: all configured engines.',
         },
         rangeMinutes: {
           type: 'number',
@@ -553,42 +573,75 @@ function buildPimClawTools() {
         };
       }
 
-      const requestedMetrics = (params.metrics as string[] | undefined) ?? Object.keys(activePromQLMap);
+      // Determine which engines to query: per-call param > config-level activeEngines
+      const engines: InferenceEngine[] = params.engine
+        ? parseEngineConfig(params.engine)
+        : activeEngines;
+
+      const requestedMetrics = (params.metrics as string[] | undefined) ?? allMetricNames();
       const deploymentName = params.deploymentName as string | undefined;
       const rangeMinutes = params.rangeMinutes as number | undefined;
       const nowSec = Math.floor(Date.now() / 1000);
 
-      const results: Record<string, unknown> = {};
+      const grouped: Record<string, Record<string, unknown>> = {};
 
-      for (const metric of requestedMetrics) {
-        // Resolve PromQL: config override > engine-specific map
-        let promql = prometheusQueryOverrides[metric] ?? activePromQLMap[metric];
-        if (!promql) {
-          results[metric] = { error: `Unknown metric: ${metric}` };
-          continue;
-        }
+      for (const engine of engines) {
+        const promqlMap = getPromQLMap(engine);
+        const engineResults: Record<string, unknown> = {};
 
-        // Inject labels (deploymentName + defaultLabels from config)
-        const labels: Record<string, string> = { ...prometheusDefaultLabels };
-        if (deploymentName) {
-          labels['model_name'] = deploymentName;
-        }
-        promql = injectLabels(promql, labels);
-
-        try {
-          if (rangeMinutes) {
-            const start = nowSec - rangeMinutes * 60;
-            const step = Math.max(15, Math.floor((rangeMinutes * 60) / 20));
-            results[metric] = await prometheusClient.queryRange(promql, start, nowSec, step);
-          } else {
-            results[metric] = await prometheusClient.query(promql);
+        for (const metric of requestedMetrics) {
+          // Resolve PromQL: config override > engine-specific map
+          let promql = prometheusQueryOverrides[metric] ?? promqlMap[metric];
+          if (!promql) {
+            // This metric may not exist for this engine — skip silently
+            continue;
           }
-        } catch (err) {
-          results[metric] = { error: err instanceof Error ? err.message : String(err) };
+
+          // Inject labels (deploymentName + defaultLabels from config)
+          const labels: Record<string, string> = { ...prometheusDefaultLabels };
+          if (deploymentName) {
+            labels['model_name'] = deploymentName;
+          }
+          promql = injectLabels(promql, labels);
+
+          try {
+            if (rangeMinutes) {
+              const start = nowSec - rangeMinutes * 60;
+              const step = Math.max(15, Math.floor((rangeMinutes * 60) / 20));
+              engineResults[metric] = await prometheusClient!.queryRange(promql, start, nowSec, step);
+            } else {
+              engineResults[metric] = await prometheusClient!.query(promql);
+            }
+          } catch (err) {
+            engineResults[metric] = { error: err instanceof Error ? err.message : String(err) };
+          }
+        }
+
+        grouped[engine] = engineResults;
+
+        // Persist per-engine snapshot to MetricsStore
+        if (metricsStore) {
+          const metricsValues: Record<string, number | null> = {};
+          for (const metric of requestedMetrics) {
+            if (metric in engineResults) {
+              metricsValues[metric] = extractMetricValue(engineResults[metric]);
+            }
+          }
+          metricsStore.add({
+            ts: Date.now(),
+            engine,
+            deployment: deploymentName,
+            metrics: metricsValues,
+          });
         }
       }
 
-      return { output: JSON.stringify(results) };
+      // Best-effort async flush after all engines
+      if (metricsStore) {
+        metricsStore.flush().catch(() => {});
+      }
+
+      return { output: JSON.stringify(grouped) };
     },
   });
 

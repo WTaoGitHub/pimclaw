@@ -28,7 +28,13 @@
         "type": "object",
         "properties": {
           "baseUrl": { "type": "string" },
-          "engine": { "type": "string", "enum": ["vllm", "sglang"], "default": "vllm" },
+          "engine": {
+            "oneOf": [
+              { "type": "string", "enum": ["vllm", "sglang"] },
+              { "type": "array", "items": { "type": "string", "enum": ["vllm", "sglang"] } }
+            ],
+            "description": "Inference engine(s) to query. Accepts a single engine name or an array. Default: all engines."
+          },
           "queryOverrides": { "type": "object", "additionalProperties": { "type": "string" } },
           "defaultLabels": { "type": "object", "additionalProperties": { "type": "string" } },
           "timeoutMs": { "type": "number", "default": 10000 },
