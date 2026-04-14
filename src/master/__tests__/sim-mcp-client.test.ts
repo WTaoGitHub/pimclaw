@@ -44,7 +44,7 @@ describe('SimMcpClient', () => {
     }));
 
     client = new SimMcpClient({
-      sseUrl: 'http://192.168.4.26:8000/sse',
+      sseUrl: 'http://192.168.4.26:8721/sse',
     });
     await client.connect();
   });

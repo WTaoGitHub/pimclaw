@@ -50,7 +50,7 @@ OPENCLAW PLATFORM
 │
 ├─ [LLM Agent] pimclaw-head (cron: */5 * * * *)
 │   ├─ Model: configurable (default: minimax-m2_1)
-│   ├─ Tools: pimclaw_query_metrics, pimclaw_submit_anomalies, pimclaw_task_counts
+│   ├─ Tools: pimclaw_query_metrics, pimclaw_submit_anomalies
 │   ├─ Session: persistent (accumulates observation history)
 │   └─ Job: Detect anomalies only
 │
