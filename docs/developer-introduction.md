@@ -1,268 +1,347 @@
-# PimClaw Developer Introduction
+# PimClaw Developer Guide
 
 ## What PimClaw Is
 
-PimClaw, short for Pagoda Inference Model Claw, is a multi-agent orchestration layer for LLM inference operations. It is designed to sit inside OpenClaw as a native plugin while also exposing its capabilities through MCP so the same orchestration model can be reused in other agent frameworks.
+PimClaw (Pagoda Inference Model Claw) is an LLM deployment orchestration system using a **v2 hybrid architecture**. It runs as a native OpenClaw plugin and also exposes its management surface through MCP for portability to other agent frameworks.
 
-At a high level, PimClaw does three things:
+PimClaw does three things:
 
-1. Creates and manages specialized sub-agents.
-2. Routes operator requests to the right agent based on intent.
-3. Connects those agents to external MCP services that provide data or execution capabilities.
+1. **Detects anomalies** — an external LLM Head Agent (cron `*/5 * * * *`) collects Grafana metrics and submits detected anomalies via the `pimclaw_submit_anomalies` tool.
+2. **Plans configurations** — an external LLM Planner Agent is spawned per anomaly to determine optimal deployment config using historical perf data and simulation, submitting via `pimclaw_plan_task`.
+3. **Executes deterministically** — programmatic components inside the plugin (Scheduler, Workers, Task Status Recorder) handle task scheduling, concurrency, execution, and state persistence.
 
-PimClaw is intentionally not the system that stores benchmark data, scrapes metrics, or changes Kubernetes state directly. It is the control and reasoning layer that coordinates those responsibilities through MCP-connected services.
+Ten tools are registered with OpenClaw so any agent session can submit tasks, check health, and inspect state.
 
-## Why The Project Exists
+PimClaw is the coordination and reasoning layer. It does not store benchmark data, collect metrics, or modify Kubernetes state directly — those responsibilities are delegated to external MCP services.
 
-Inference operations usually spread across several concerns:
+## Architecture
 
-- historical benchmark lookup
-- runtime monitoring
-- configuration simulation
-- performance analysis and recommendation
-
-Those concerns often live in different systems and require different reasoning patterns. PimClaw separates them into role-based agents so the system can grow without turning into a single overloaded prompt or tool bundle.
-
-The initial target use case is performance management for model deployments running on heterogeneous accelerator hardware such as NVIDIA H800, Ascend 910B, and PPU ZW810E.
-
-## Core Design Principles
-
-### 1. OpenClaw-native, not OpenClaw-only
-
-PimClaw integrates directly with OpenClaw through the plugin SDK, but its core functionality is also exposed as an MCP server. That gives the project two deployment modes:
-
-- native plugin mode inside OpenClaw
-- portable MCP server mode for any MCP-compatible framework
-
-### 2. MCP-first boundaries
-
-PimClaw does not assume direct ownership of every dependency. Instead, it treats external services as MCP endpoints. This keeps integration boundaries explicit and makes the orchestration layer easier to port.
-
-### 3. Role-specific agents
-
-Each sub-agent has a narrow role and a clear responsibility. The current roles are:
-
-- `perf`: retrieves historical performance and benchmark data
-- `analyst`: interprets data and produces recommendations
-- `mon`: handles runtime monitoring workflows
-- `sim`: handles simulation and what-if analysis
-
-### 4. Human-in-the-loop operations
-
-The project is designed for operators interacting through conversation. Natural language requests are translated into routing, tool use, and agent-level decisions by the PimClaw master components.
-
-## System Architecture
-
-PimClaw has four main layers.
-
-### Plugin Layer
-
-The OpenClaw plugin entry lives in `src/index.ts`.
-
-This layer is responsible for:
-
-- registering PimClaw tools with OpenClaw
-- registering the PimClaw lifecycle service
-- parsing plugin configuration
-- auto-creating default agents when configured
-
-### Master Layer
-
-The master layer lives under `src/master/` and contains the control logic.
-
-- `orchestrator.ts`: owns agent lifecycle, registry state, MCP connectivity, and task delegation
-- `router.ts`: classifies requests and chooses the best target role or agent
-- `supervisor.ts`: evaluates health, error rates, and idle status across agents
-
-This is the layer to read first if you want to understand PimClaw behavior.
-
-### MCP Integration Layer
-
-The MCP layer lives under `src/mcp/`.
-
-- `client.ts`: connects PimClaw agents to external MCP services
-- `server.ts`: exposes PimClaw's own management capabilities as MCP tools
-
-This is the portability boundary of the project.
-
-### Domain Types And Prompts
-
-Support code is organized into:
-
-- `src/types/agents.ts`: agent state, role, lifecycle, and MCP service types
-- `src/types/models.ts`: performance-domain data types
-- `src/agents/prompts.ts`: role-specific prompts and master-agent framing
-- `src/config.ts`: plugin configuration parsing
-
-## Runtime Model
-
-When PimClaw starts inside OpenClaw, the typical flow is:
-
-1. OpenClaw loads the PimClaw plugin entry.
-2. PimClaw parses plugin configuration.
-3. The plugin service starts and optionally auto-creates default agents.
-4. Sub-agents connect to configured MCP services.
-5. An operator submits a conversational request.
-6. PimClaw routes the request to the best sub-agent or service tool path.
-7. The result is returned back through OpenClaw.
-
-In standalone mode, PimClaw skips the OpenClaw plugin lifecycle and exposes its management tools directly through its own MCP server.
-
-## What PimClaw Owns And What It Does Not
-
-PimClaw owns:
-
-- agent creation and termination
-- agent registry state
-- task routing
-- MCP connection management
-- health and supervision logic
-- OpenClaw tool registration
-- MCP exposure of PimClaw management tools
-
-PimClaw does not own:
-
-- benchmark database storage
-- runtime metrics collection infrastructure
-- Kubernetes deployment execution
-- simulator implementation details
-- model-serving engine logic
-
-Those responsibilities are delegated to external systems accessed through MCP.
-
-## Current Tool Surface
-
-PimClaw registers the following management tools:
-
-- `pimclaw_list_agents`
-- `pimclaw_create_agent`
-- `pimclaw_terminate_agent`
-- `pimclaw_agent_status`
-- `pimclaw_route_task`
-- `pimclaw_call_mcp_tool`
-- `pimclaw_list_agent_tools`
-- `pimclaw_health`
-
-These tools are the primary interface for both OpenClaw integration and standalone MCP portability.
-
-## Repository Map
-
-For day-to-day development, these are the most important files:
-
-- `src/index.ts`: plugin entry and lifecycle wiring
-- `src/master/orchestrator.ts`: central control plane
-- `src/master/router.ts`: request classification
-- `src/master/supervisor.ts`: health logic
-- `src/mcp/client.ts`: outbound MCP integration
-- `src/mcp/server.ts`: inbound MCP exposure
-- `src/agents/prompts.ts`: role prompts
-- `src/config.ts`: config parsing
-- `openclaw.plugin.json`: manifest and UI-facing config schema
-- `docs/requirements.md`: full requirements and acceptance criteria
-- `docs/install.md`: install and integration guide
-
-## Development Workflow
-
-The current local workflow is straightforward.
-
-### Install
-
-```bash
-npm install
+```
+┌─────────────────────────────────────────────────────┐
+│  OpenClaw Process                                   │
+│                                                     │
+│  PimClaw Plugin (definePluginEntry)                 │
+│  ┌───────────────────────────────────────────────┐  │
+│  │  Service: pimclaw-components                  │  │
+│  │                                               │  │
+│  │   ComponentRegistry      (in-memory state)    │  │
+│  │   TaskStatusRecorder     (persisted to disk)  │  │
+│  │       ↓                                       │  │
+│  │   AnomalyReceiver        (validates events)   │  │
+│  │     + PlannerTrigger      (spawns Planner)    │  │
+│  │       ↓                                       │  │
+│  │   Scheduler.run()         (polls & dispatches)│  │
+│  │       ↓ spawns                                │  │
+│  │   Workers                 (ephemeral, 1:1)    │  │
+│  └───────────────────────────────────────────────┘  │
+│                                                     │
+│  Tools: pimclaw_submit_anomalies, pimclaw_plan_task,│
+│         pimclaw_route_task, pimclaw_health, …       │
+│                                                     │
+│  LLM Agent Runtime (external)                       │
+│    [pimclaw-head]     cron */5 min → Grafana MCP    │
+│    [pimclaw-planner]  on-demand → Perf/Sim MCP      │
+│                                                     │
+│  External MCP Services                              │
+│    engine   ── deployment execution (Workers)       │
+└─────────────────────────────────────────────────────┘
 ```
 
-### Type-check
+### Component roles
 
-```bash
-npm run lint
+| Component | Type | Lifecycle | Purpose |
+|-----------|------|-----------|---------|
+| **LLM Head Agent** | External LLM agent | Cron `*/5 * * * *` via OpenClaw runtime | Collect Grafana metrics → detect anomalies → call `pimclaw_submit_anomalies` |
+| **LLM Planner Agent** | External LLM agent | On-demand, ephemeral session | Query Perf/Simulator MCP → determine optimal config → call `pimclaw_plan_task` |
+| **AnomalyReceiver** | Plugin component | Created on `start` | Validate incoming events, dedup, rate-limit, trigger PlannerTrigger |
+| **PlannerTrigger** | Plugin component | Created on `start` | Spawn Planner agent via OpenClaw API with event context |
+| **Scheduler** | Plugin component | Long-running loop (5 sec interval) | Pick up `ready` tasks → enforce concurrency → dispatch Workers |
+| **Worker** | Plugin component | Ephemeral (one per task) | Execute a single task via Engine MCP → report result → self-destruct |
+| **TaskStatusRecorder** | Plugin component | Passive (no loop) | 8-state task state machine + JSON file persistence |
+| **ComponentRegistry** | Plugin component | Passive | In-memory status tracking + health checks for plugin components |
+
+## Source layout
+
+```
+src/
+├── index.ts                    # barrel — re-exports plugin + all building blocks
+├── openclaw-plugin.ts          # OpenClaw plugin entry (service + 10 tools + fallback logic)
+├── config-manager.ts           # YAML config loader with ${ENV_VAR} substitution
+├── master/
+│   ├── base-agent.ts           # abstract base: lifecycle, MCP clients, registry
+│   ├── anomaly-receiver.ts     # validates LLM Head events, triggers Planner
+│   ├── planner-trigger.ts      # spawns Planner agent via OpenClaw API
+│   ├── component-registry.ts   # in-memory component status (EventEmitter)
+│   ├── scheduler-agent.ts      # task polling & concurrency
+│   ├── task-status-recorder.ts # task CRUD & persistence (8-state machine)
+│   ├── worker-agent.ts         # ephemeral task executor
+│   ├── mcp-server.ts           # standalone MCP server (tools via stdio)
+│   ├── cli.ts                  # CLI tool (commander)
+│   └── __tests__/              # unit tests
+├── __tests__/
+│   └── e2e.test.ts             # end-to-end test suite
+└── types/
+    ├── index.ts                # barrel re-export
+    ├── agents.ts               # AgentType, AgentStatus, AgentRuntimeStatus, AgentConfig
+    ├── tasks.ts                # Task, TaskStatus, MetricsSnapshot, DetectedEvent
+    └── models.ts               # PerformanceBenchmark, Deployment, MetricRule
+AGENTS.md                       # LLM Head & Planner agent definitions and system prompts
+types/
+└── openclaw-plugin-sdk.d.ts    # ambient declarations for openclaw/plugin-sdk
 ```
 
-### Run tests
+## Key data flows
 
-```bash
-npm test
+### 1. Plugin startup (inside OpenClaw)
+
+```
+openclaw-plugin.ts  start(ctx)
+  → new ComponentRegistry()
+  → new TaskStatusRecorder(ctx.stateDir + '/pimclaw-tasks')
+  → recorder.initialize()          # loads tasks.json, expires stale tasks
+                                   # (planning >10min, ready >60s, scheduling >30s → expired)
+  → new PlannerTrigger(openclawApi, plannerConfig)
+  → new AnomalyReceiver(recorder, plannerTrigger, config, hooks)
+                                   # hooks: onPlanningTaskCreated → schedule fallback timer
+                                   #        onPlannerTriggerFailed → apply fallback immediately
+  → new Scheduler(registry, recorder)
+  → scheduler.initialize()         # registers in registry, connects MCP
+  → scheduler.run()                # background: polls every 5s
 ```
 
-### Build
+### 2. Anomaly detection flow (LLM Head → Plugin → LLM Planner)
 
-```bash
-npm run build
+```
+[LLM Head Agent]  (cron, every 5 min)
+  → calls Grafana MCP tools → collects metrics
+  → reasons about anomalies using session history
+  → calls pimclaw_submit_anomalies({ events: [...] })
+
+AnomalyReceiver.receive(events)
+  → validate each event (type, metric, values)
+  → deduplicate (same metric+deployment within 10min)
+  → rate-limit (max 20 per submission)
+  → for each valid event:
+      → create task in 'planning' state
+      → hooks.onPlanningTaskCreated(taskId)   # starts fallback timer
+      → PlannerTrigger.trigger(event, taskId) # spawns Planner agent
+
+[LLM Planner Agent]  (ephemeral, one-shot)
+  → queries Perf MCP (historical configs)
+  → simulates via Simulator MCP (predicted outcomes)
+  → calls pimclaw_plan_task({ taskId, taskType, config, reasoning, ... })
+
+openclaw-plugin.ts  pimclaw_plan_task handler
+  → validates task exists in 'planning' state
+  → attaches config, reasoning, evidence to task
+  → clears fallback timer
+  → transitions task: planning → ready
 ```
 
-### Run standalone MCP server
+### 3. Task lifecycle
 
-```bash
-npx tsx src/mcp/server.ts
+```
+planning → ready → scheduling → scheduled → running → done
+                                                    → failed → (retry: back to ready)
+                                                              → (max retries: stays failed)
+planning → ready  (via pimclaw_plan_task OR fallback timeout)
+ready → expired   (if waiting > 60s, or manually revoked)
+planning → expired (if stale > 10min on restart)
 ```
 
-## How To Approach Changes
+### 4. Tool invocation (from OpenClaw agent session)
 
-When adding or changing behavior, use these guidelines.
+```
+Agent session: "Scale up gpt-4-prod"
+  → OpenClaw calls pimclaw_route_task({ llmDeploymentName: "gpt-4-prod", taskType: "scale-up" })
+  → openclaw-plugin.ts creates a Task (status: ready) in TaskStatusRecorder
+  → Scheduler picks it up on next poll
+  → Scheduler creates a Worker
+  → Worker calls Engine MCP → reports result
+  → Agent session can check with pimclaw_list_tasks or pimclaw_task_counts
+```
 
-### If you are changing routing behavior
+## Key constants & thresholds
 
-Start with `src/master/router.ts` and its tests. Routing bugs are usually caused by overlapping intent patterns or weighting mistakes.
+| Where | Constant | Value | What it does |
+|-------|----------|-------|--------------|
+| LLM Head Agent | Observation interval | 5 min (cron) | Detection cycle frequency |
+| LLM Head Agent | Spike threshold | > 200% | Guideline in system prompt |
+| LLM Head Agent | Drop threshold | < 50% | Guideline in system prompt |
+| LLM Head Agent | Task capacity | 50 | Check via `pimclaw_task_counts` before submitting |
+| AnomalyReceiver | `maxEventsPerSubmission` | 20 | Rate limit per tool call |
+| AnomalyReceiver | `deduplicationWindowMs` | 10 min | Same metric+deployment dedup window |
+| Plugin (fallback) | `planningTimeoutMs` | 10 min | Fallback timer for planning tasks |
+| Plugin (fallback) | `fallbackTaskType` | `scale-up` | Default task type when Planner fails |
+| Plugin (fallback) | `fallbackConfig` | `{ replicaDelta: 1 }` | Default config when Planner fails |
+| Scheduler | `pollingIntervalMs` | 5 sec | Task polling frequency |
+| Scheduler | `maxConcurrentWorkers` | 10 | Worker concurrency cap |
+| Scheduler | Task expiry | 60 sec | Ready tasks older than this are expired |
+| Worker | `executionTimeout` | 30 min | `Promise.race` timeout per task |
+| TaskStatusRecorder | Ready expiry (init) | 60 sec | Stale ready tasks expired on load |
+| TaskStatusRecorder | Scheduling expiry (init) | 30 sec | Stale scheduling tasks expired on load |
+| TaskStatusRecorder | Planning expiry (init) | 10 min | Stale planning tasks expired on load |
+| ComponentRegistry | Idle threshold | 30 min | Flags components as idle |
+| ComponentRegistry | Error threshold | > 5 | Flags components with excess errors |
 
-### If you are changing agent lifecycle or connectivity
+## Development workflow
 
-Start with `src/master/orchestrator.ts` and `src/mcp/client.ts`. Most operational behavior flows through these two files.
+### Setup
 
-### If you are changing OpenClaw integration
+```bash
+npm install          # install all dependencies
+npm run build        # compile TypeScript → dist/
+```
 
-Start with `src/index.ts` and `openclaw.plugin.json`. Keep plugin registration and manifest configuration aligned.
+### Daily loop
 
-### If you are adding a new agent role
+```bash
+npm run dev          # tsc --watch
+npm test             # vitest (unit + e2e)
+npm run lint         # eslint src/
+```
 
-You will likely need to update:
+### Run E2E tests
 
-- `src/types/agents.ts`
-- `src/agents/prompts.ts`
-- `src/master/router.ts`
-- `src/master/orchestrator.ts`
-- `src/mcp/server.ts`
-- relevant tests
+```bash
+npx vitest run src/__tests__/e2e.test.ts
+```
 
-## Testing Strategy
+The E2E suite covers the v2 integration boundary (anomaly submission → planning → ready transition) and component flows without MCP services — Planner triggering uses mock APIs, MCP connection failures are caught gracefully.
 
-The project currently has focused unit coverage around the main control surfaces:
+### CLI inspection
 
-- orchestrator behavior
-- routing decisions
-- supervisor reporting
-- MCP tool exposure
+```bash
+npx tsx src/master/cli.ts health
+npx tsx src/master/cli.ts tasks list --status ready
+npx tsx src/master/cli.ts components list
+```
 
-If you change behavior in those areas, update or extend the corresponding tests first. This codebase is small enough that regressions usually show up quickly when the control flow or tool contracts shift.
+Note: the CLI creates standalone `ComponentRegistry` / `TaskStatusRecorder` instances — it does not connect to running components.
 
-## Known Constraints
+## How to approach changes
 
-- PimClaw currently relies on external MCP services for domain data and action execution.
-- OpenClaw SDK typing is supported locally through ambient declarations so PimClaw can be developed even when the OpenClaw host checkout is not fully built.
-- The plugin manifest and the runtime config parser must stay in sync.
+### Adding a new tool
 
-## Recommended Reading Order
+1. Add the tool factory function in `src/openclaw-plugin.ts` (follow the `routeTaskTool` pattern)
+2. Add it to the `buildPimClawTools()` return array
+3. Add the tool name to `openclaw.plugin.json` → `contracts.tools`
+4. Optionally mirror it in `src/master/mcp-server.ts` for standalone MCP use
+5. Add a test in `src/__tests__/e2e.test.ts` under "Plugin tool flows"
 
-For a new developer joining the project, this reading order is usually the fastest:
+### Changing component behavior
 
-1. `docs/developer-introduction.md`
-2. `docs/requirements.md`
-3. `docs/install.md`
-4. `src/index.ts`
-5. `src/master/orchestrator.ts`
-6. `src/master/router.ts`
-7. `src/mcp/server.ts`
+| What | Start here |
+|------|-----------|
+| Anomaly detection thresholds | `AGENTS.md` → pimclaw-head system prompt |
+| Configuration planning logic | `AGENTS.md` → pimclaw-planner system prompt |
+| Anomaly event validation/dedup | `src/master/anomaly-receiver.ts` |
+| Planner agent spawning | `src/master/planner-trigger.ts` |
+| Planner fallback behavior | `src/openclaw-plugin.ts` → fallback helpers |
+| Polling interval or concurrency | `src/master/scheduler-agent.ts` (constructor / field defaults) |
+| Task state transitions | `src/master/task-status-recorder.ts` → `updateTaskStatus()` |
+| Task execution / MCP calls | `src/master/worker-agent.ts` → `executeTask()` |
+| Component registration / health | `src/master/component-registry.ts` |
 
-That sequence gives you the conceptual model first, then the operating model, then the code path that matters most.
+### Wiring ConfigurationManager to components
 
-## Near-Term Development Priorities
+`ConfigurationManager` is implemented but **not yet wired** into component constructors. Components currently hardcode their MCP service configs and thresholds. To activate config-driven setup:
 
-The most natural next areas of growth are:
+1. Load config in `openclaw-plugin.ts` → `start()` before creating components
+2. Pass `config.agents.scheduler`, etc. into constructors
+3. Replace hardcoded MCP service definitions in `WorkerAgent` with `config.mcp.services`
 
-- richer agent-to-agent coordination patterns
-- more robust MCP service health and retry logic
-- stronger runtime monitoring and simulation integrations
-- operator-facing workflows for recommendations and follow-up actions
-- packaging and publishing improvements for external plugin consumption
+### Adding a new component type
 
-## Summary
+1. Add the type to `AgentType` in `src/types/agents.ts`
+2. Create a new class extending `BaseAgent` in `src/master/`
+3. Implement `run()` with the component's main loop
+4. Instantiate and start it in `openclaw-plugin.ts` → `start()` (and shut down in `stop()`)
+5. Add relevant counters to `AgentCounters` in `src/types/agents.ts`
+6. Write tests
 
-PimClaw is best understood as a control plane for inference-operations intelligence. It is not a monolithic agent and not a direct executor of all platform operations. Its value comes from coordinating specialized agents, keeping tool boundaries explicit through MCP, and fitting naturally into OpenClaw while remaining portable beyond it.
+## Testing strategy
+
+| Layer | Tests | Location |
+|-------|-------|----------|
+| E2E (v2 integration) | integration boundary + component flows | `src/__tests__/e2e.test.ts` |
+| ComponentRegistry | unit tests | `src/master/__tests__/component-registry.test.ts` |
+| AnomalyReceiver | unit tests | `src/master/__tests__/anomaly-receiver.test.ts` |
+| SchedulerAgent | unit tests | `src/master/__tests__/scheduler-agent.test.ts` |
+| TaskStatusRecorder | unit tests | `src/master/__tests__/task-status-recorder.test.ts` |
+
+E2E tests run against real classes with mock Planner APIs — no external MCP services needed. The entire anomaly → planning → ready → scheduling flow is testable without external dependencies.
+
+To run all tests: `npm test`  
+To run with coverage: `npm run test:coverage`
+
+## Persistence
+
+All persistent state lives under `stateDir` (provided by OpenClaw) or the configured `storagePath`:
+
+```
+<stateDir>/
+  pimclaw-tasks/
+    tasks.json              # all task records
+```
+
+The file is plain JSON, read on startup (`initialize()`) and written on shutdown (`persist()`). The task recorder also writes periodically during operation.
+
+LLM Head Agent observation history is persisted via OpenClaw's session system (not in the plugin's `stateDir`). The Planner uses ephemeral sessions — no history accumulation.
+
+## MCP integration boundary
+
+PimClaw acts as both an **MCP client** (workers call external tools) and an **MCP server** (exposes its own tools). In v2, the LLM agents (Head, Planner) handle most MCP client calls directly via OpenClaw's agent runtime.
+
+### As MCP client (outbound)
+
+Handled in `BaseAgent.connectToMCPServices()` using `@modelcontextprotocol/sdk`:
+
+| Component | MCP Service | Tool called |
+|-----------|-------------|-------------|
+| Worker | `engine` | `execute_deployment_change` |
+| LLM Head Agent (external) | `grafana` | Metrics collection (via OpenClaw agent tools) |
+| LLM Planner Agent (external) | `perf` | Historical performance data (via OpenClaw agent tools) |
+| LLM Planner Agent (external) | `simulator` | Load simulation (via OpenClaw agent tools) |
+
+Connection failures are caught — components continue running with fallback behavior.
+
+### As MCP server (inbound)
+
+`PimClawMCPServer` in `src/master/mcp-server.ts` exposes PimClaw tools over stdio for external frameworks that want to interact with PimClaw without going through OpenClaw.
+
+### Integration gates (LLM ↔ Plugin)
+
+Two structured data gates connect the LLM agents to the plugin:
+
+| Gate | Direction | Tool | Purpose |
+|------|-----------|------|---------|
+| Gate 1 | Head → Plugin | `pimclaw_submit_anomalies` | Anomaly events with metric values and reasoning |
+| Gate 2 | Planner → Plugin | `pimclaw_plan_task` | Deployment config with evidence and simulation results |
+
+Both gates validate inputs before acting. Invalid events/plans are rejected. The plugin applies fallback configs on Planner timeout or failure.
+
+## Known constraints
+
+- MCP service endpoints for Workers are hardcoded in agent constructors (`ConfigurationManager` is not yet wired in)
+- The CLI creates fresh instances rather than connecting to a running system
+- Worker creation in the Scheduler is partially stubbed (tracks `activeWorkers` but full Worker spawn is TODO)
+- `Deployment.kubeernetesPodName` has a typo in `src/types/models.ts`
+- OpenClaw SDK types are ambient declarations — PimClaw can be built without the OpenClaw host checkout
+- LLM Head and Planner agents require OpenClaw agent runtime to be configured separately (see `AGENTS.md`)
+- Late Planner responses after fallback has already promoted a task to `ready` are rejected (task is no longer in `planning` state)
+
+## Recommended reading order
+
+1. This guide
+2. `src/openclaw-plugin.ts` — the real entry point; shows how everything boots and how fallback works
+3. `AGENTS.md` — LLM Head and Planner agent definitions and system prompts
+4. `src/master/anomaly-receiver.ts` — the Head→Plugin integration gate
+5. `src/master/planner-trigger.ts` — how Planner agents are spawned
+6. `src/master/base-agent.ts` — lifecycle pattern shared by Scheduler and Workers
+7. `src/master/scheduler-agent.ts` — task dispatch
+8. `src/master/task-status-recorder.ts` — 8-state machine
+9. `src/types/tasks.ts` — data shapes (including planning fields)
+10. `src/__tests__/e2e.test.ts` — see v2 features exercised
+11. `docs/howtointegratewithopenclaw.md` — plugin integration guide
+12. `docs/install.md` — build, package, deliver

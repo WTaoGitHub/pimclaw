@@ -1,173 +1,198 @@
-# PimClaw — Install & Integration Guide
+# Building, Packaging & Delivering PimClaw
 
 ## Prerequisites
 
-- Node.js ≥ 22.16
-- An existing [OpenClaw](https://github.com/nicepkg/openclaw) instance (source checkout)
-- One or more MCP services for PimClaw sub-agents to consume (e.g. `perf` MCP server)
+| Requirement | Version |
+|-------------|---------|
+| Node.js | >= 22.16.0 |
+| npm | >= 10 |
+| TypeScript | >= 5.3 (installed as devDependency) |
 
----
+## Building
 
-## 1. Clone PimClaw next to your OpenClaw checkout
-
-```bash
-# Example layout:
-# ~/projects/openclaw/        ← OpenClaw source
-# ~/projects/pimclaw/         ← PimClaw plugin (this repo)
-
-cd ~/projects
-git clone <pimclaw-repo-url> pimclaw
-cd pimclaw
-```
-
-## 2. Point PimClaw at your local OpenClaw
-
-Edit `package.json` and update the `openclaw` devDependency path:
-
-```jsonc
-"devDependencies": {
-  "openclaw": "file:/absolute/path/to/openclaw",
-  // ...
-}
-```
-
-Then install:
+### Full build
 
 ```bash
-npm install
+npm install        # install all dependencies
+npm run build      # compile TypeScript → dist/
 ```
 
-## 3. Verify the build
+`tsc` compiles every `.ts` file under `src/` into `dist/` with:
+
+- ES2022 target, Node16 module resolution
+- `.js` — runtime code
+- `.d.ts` + `.d.ts.map` — type declarations
+- `.js.map` — source maps
+
+### Watch mode (development)
 
 ```bash
-npm run lint    # TypeScript type-check (zero errors expected)
-npm test        # 29 tests, all should pass
-npm run build   # Emits dist/
+npm run dev        # tsc --watch
 ```
 
-## 4. Register PimClaw as an OpenClaw extension
-
-Add PimClaw to OpenClaw's configuration. In your OpenClaw config file (typically `~/.config/openclaw/config.yaml` or the equivalent), add:
-
-```yaml
-plugins:
-  pimclaw:
-    enabled: true
-    path: /absolute/path/to/pimclaw
-    config:
-      autoCreateAgents: true
-      perfMcp:
-        command: "node"
-        args: ["path/to/perf-mcp-server.js"]
-        env:
-          DATABASE_URL: "postgresql://user:pass@host:5432/perfdb"
-      # monMcp:               # optional — runtime monitor
-      #   command: "node"
-      #   args: ["path/to/mon-mcp-server.js"]
-      # simMcp:               # optional — simulator
-      #   command: "node"
-      #   args: ["path/to/sim-mcp-server.js"]
-```
-
-Alternatively, if OpenClaw supports extension discovery via workspace layout, symlink PimClaw into the extensions directory:
+### Verify the build
 
 ```bash
-ln -s /absolute/path/to/pimclaw /path/to/openclaw/extensions/pimclaw
+npm test           # run vitest (all src/**/*.test.ts)
+npm run lint       # eslint src
 ```
 
-## 5. Start OpenClaw
-
-Start (or restart) OpenClaw. PimClaw registers:
-
-| Registered Item | Type    | Description |
-|----------------|---------|-------------|
-| `pimclaw_list_agents` | Tool | List all sub-agents |
-| `pimclaw_create_agent` | Tool | Create a new sub-agent (perf/analyst/mon/sim) |
-| `pimclaw_terminate_agent` | Tool | Terminate a sub-agent |
-| `pimclaw_agent_status` | Tool | Get agent details |
-| `pimclaw_route_task` | Tool | Route a task to the best sub-agent |
-| `pimclaw_call_mcp_tool` | Tool | Call a tool on a sub-agent's MCP service |
-| `pimclaw_list_agent_tools` | Tool | Discover tools available to an agent |
-| `pimclaw_health` | Tool | Health report for all sub-agents |
-| `pimclaw` | Service | Lifecycle management (auto-creates agents on start) |
-
-## 6. Verify in OpenClaw
-
-Once OpenClaw is running, test the plugin:
-
-```
-> List all PimClaw agents
-> Create a perf agent called "GPU Perf Tracker"
-> What is the throughput of Qwen3-235B-A22B on H800?
-```
-
----
-
-## Standalone MCP Server (without OpenClaw)
-
-PimClaw can also run as a standalone MCP server for integration with any MCP-compatible framework:
-
-```bash
-npx tsx src/mcp/server.ts
-```
-
-This exposes the same 7 tools over MCP stdio transport. Configure your MCP client to connect:
-
-```json
-{
-  "mcpServers": {
-    "pimclaw": {
-      "command": "npx",
-      "args": ["tsx", "/path/to/pimclaw/src/mcp/server.ts"]
-    }
-  }
-}
-```
-
----
-
-## Configuration Reference
-
-| Key | Type | Default | Description |
-|-----|------|---------|-------------|
-| `autoCreateAgents` | `boolean` | `true` | Auto-create default agents (perf, analyst) on startup |
-| `perfMcp.command` | `string` | — | Command to start the perf MCP server |
-| `perfMcp.args` | `string[]` | — | Arguments for the perf MCP command |
-| `perfMcp.env` | `Record<string,string>` | — | Environment variables for the perf MCP process |
-| `monMcp.command` | `string` | — | Command for the runtime monitor MCP server |
-| `monMcp.args` | `string[]` | — | Arguments for the mon MCP command |
-| `monMcp.env` | `Record<string,string>` | — | Environment variables for the mon MCP process |
-| `simMcp.command` | `string` | — | Command for the simulator MCP server |
-| `simMcp.args` | `string[]` | — | Arguments for the sim MCP command |
-| `simMcp.env` | `Record<string,string>` | — | Environment variables for the sim MCP process |
-
----
-
-## Project Structure
+## Project structure after build
 
 ```
 pimclaw/
-├── src/
-│   ├── index.ts              Plugin entry (OpenClaw SDK integration)
-│   ├── config.ts             Configuration parser
-│   ├── agents/
-│   │   └── prompts.ts        Role-specific system prompts
+├── dist/                          # compiled output (git-ignored)
+│   ├── index.js                   # main entry — re-exports + OpenClaw plugin default
+│   ├── openclaw-plugin.js         # plugin entry with service + tools
+│   ├── config-manager.js          # YAML config loader
 │   ├── master/
-│   │   ├── orchestrator.ts   Agent lifecycle & task routing
-│   │   ├── router.ts         Intent classification
-│   │   └── supervisor.ts     Health monitoring
-│   ├── mcp/
-│   │   ├── client.ts         MCP client (connects to external services)
-│   │   └── server.ts         MCP server (exposes PimClaw tools)
-│   └── types/
-│       ├── agents.ts         Agent type definitions
-│       └── models.ts         Performance data types
-├── types/
-│   └── openclaw-plugin-sdk.d.ts   Ambient type declarations for OpenClaw SDK
-├── openclaw.plugin.json      Plugin manifest with config schema
-├── docs/
-│   ├── requirements.md       Full requirements specification
-│   └── install.md            This file
+│   │   ├── component-registry.js  # in-memory component status & health
+│   │   ├── base-agent.js          # agent base class (Scheduler, Worker)
+│   │   ├── anomaly-receiver.js    # validates LLM Head events, triggers Planner
+│   │   ├── planner-trigger.js     # spawns Planner agent via OpenClaw API
+│   │   ├── scheduler-agent.js     # task polling & concurrency
+│   │   ├── task-status-recorder.js# task state machine + persistence
+│   │   ├── worker-agent.js        # ephemeral task executor
+│   │   ├── mcp-server.js          # MCP Server wrapper
+│   │   └── cli.js                 # CLI tool
+│   └── types/                     # type declarations
+├── AGENTS.md                      # LLM Head & Planner agent definitions
+├── openclaw.plugin.json           # OpenClaw plugin manifest
 ├── package.json
 └── tsconfig.json
 ```
+
+## Packaging
+
+### For npm publish
+
+Add the `files` field to `package.json` to keep the tarball lean (include only what's needed at runtime):
+
+```json
+{
+  "files": [
+    "dist",
+    "openclaw.plugin.json"
+  ]
+}
+```
+
+Then:
+
+```bash
+npm run build
+npm pack                   # creates pimclaw-1.0.0.tgz
+```
+
+Inspect what goes into the tarball:
+
+```bash
+npm pack --dry-run         # list all included files
+```
+
+### Publish to a registry
+
+```bash
+# npm public registry
+npm publish
+
+# private / scoped registry
+npm publish --registry https://npm.example.com
+
+# GitHub Packages
+npm publish --registry https://npm.pkg.github.com
+```
+
+> **Checklist before publishing:**
+> 1. `npm run build` succeeds with no errors
+> 2. `npm test` passes (31 E2E + unit tests across 5 test files)
+> 3. Version in `package.json` is bumped (`npm version patch|minor|major`)
+> 4. `openclaw.plugin.json` contracts list matches the actual registered tools (10 tools)
+
+## Delivering to OpenClaw
+
+### Option 1 — Install from npm
+
+```bash
+openclaw plugins install pimclaw
+```
+
+### Option 2 — Install from a local path
+
+```bash
+openclaw plugins install /path/to/pimclaw
+```
+
+### Option 3 — Install into a Docker container
+
+```bash
+# 1. Build locally
+npm run build
+
+# 2. Copy into a stable path in the container
+docker cp . openclaw-container:/app/plugins/pimclaw
+
+# 3. Ensure the plugin files are owned by the runtime user
+docker exec -u root openclaw-container sh -lc 'chown -R node:node /app/plugins/pimclaw'
+
+# 4. Install the plugin from that path
+docker exec openclaw-container sh -lc 'openclaw plugins install /app/plugins/pimclaw'
+
+# 5. Restart OpenClaw so the service restarts cleanly
+docker restart openclaw-container
+```
+
+To update after code changes:
+
+```bash
+npm run build
+docker cp . openclaw-container:/app/plugins/pimclaw
+docker exec -u root openclaw-container sh -lc 'chown -R node:node /app/plugins/pimclaw'
+docker restart openclaw-container
+```
+
+### Option 4 — Reference in OpenClaw config
+
+```json
+{
+  "plugins": [
+    { "id": "pimclaw", "enabled": true }
+  ]
+}
+```
+
+### Verify installation
+
+```bash
+openclaw plugins list              # pimclaw should appear
+openclaw plugins inspect pimclaw   # pimclaw should be loaded
+openclaw plugins doctor            # no plugin issues
+```
+
+Once activated, the `pimclaw-components` service starts automatically and the ten tools (`pimclaw_submit_anomalies`, `pimclaw_plan_task`, `pimclaw_route_task`, `pimclaw_health`, etc.) become available to all agent sessions. The LLM Head and Planner agents must also be configured in OpenClaw's agent runtime — see `AGENTS.md`.
+
+For current environment-specific deployment paths, see:
+
+- `docs/testing-env-deploy.md`
+- `docs/production-deploy.md`
+
+## Compatibility
+
+| Field | Value | Where |
+|-------|-------|-------|
+| Plugin API | `>= 2026.1.0` | `package.json` → `openclaw.compat.pluginApi` |
+| Node.js | `>= 22.16.0` | `package.json` → `engines.node` |
+| Module system | ESM (`"type": "module"`) | `package.json` |
+
+## Quick reference
+
+| Task | Command |
+|------|---------|
+| Install deps | `npm install` |
+| Build | `npm run build` |
+| Watch mode | `npm run dev` |
+| Run tests | `npm test` |
+| Lint | `npm run lint` |
+| Pack tarball | `npm pack` |
+| Publish | `npm publish` |
+| CLI inspect | `npm run cli` / `node dist/master/cli.js` |

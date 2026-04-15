@@ -1,132 +1,45 @@
 /**
- * PimClaw — OpenClaw Plugin Entry Point
+ * PimClaw - LLM Deployment Orchestration System (v2 Hybrid Architecture)
  *
- * Pagoda Inference Model Claw: A multi-agent system for managing
- * LLM inference model deployments. Creates, supervises, and coordinates
- * specialized sub-agents that consume external MCP services (perf, mon, sim).
+ * When used as an OpenClaw plugin the default export from
+ * ./openclaw-plugin.ts is the entry point — it registers a background
+ * service that boots PimClaw components and exposes tools to OpenClaw agents.
+ *
+ * LLM Head and Planner agents run externally via OpenClaw's agent runtime.
+ * See AGENTS.md for their definitions.
  */
 
-import {
-  definePluginEntry,
-  type AnyAgentTool,
-  type PluginLogger,
-} from "openclaw/plugin-sdk/plugin-entry";
+// ── OpenClaw plugin entry (default export) ─────────────────────────────────
+export { default } from './openclaw-plugin.js';
+export { registerToolHook } from './openclaw-plugin.js';
+export type { ToolHook } from './openclaw-plugin.js';
 
-import { Orchestrator } from "./master/orchestrator.js";
-import { Supervisor } from "./master/supervisor.js";
-import { buildMasterTools } from "./mcp/server.js";
-import { parseConfig } from "./config.js";
-import type { PimClawConfig } from "./config.js";
+// ── Core orchestration components ──────────────────────────────────────────
+export { ComponentRegistry } from './master/component-registry.js';
+/** @deprecated Use ComponentRegistry instead */
+export { ComponentRegistry as AgentRegistry } from './master/component-registry.js';
+export type { HealthReport, HealthIssue } from './master/component-registry.js';
+export { TaskStatusRecorder } from './master/task-status-recorder.js';
+export { BaseAgent } from './master/base-agent.js';
+export type { LifecyclePhase } from './master/base-agent.js';
+export { SchedulerAgent } from './master/scheduler-agent.js';
+export { WorkerAgent } from './master/worker-agent.js';
 
-// Singleton orchestrator — shared between plugin tools and MCP server
-let sharedOrchestrator: Orchestrator | null = null;
+// ── Integration boundary ──────────────────────────────────────────────────
+export { AnomalyReceiver } from './master/anomaly-receiver.js';
+export type { AnomalyEvent, ValidatedEvent, AnomalyReceiverConfig, HookResult } from './master/anomaly-receiver.js';
+export { PlannerTrigger } from './master/planner-trigger.js';
+export type { OpenClawAgentApi, PlannerTriggerConfig } from './master/planner-trigger.js';
 
-export function getOrchestrator(): Orchestrator {
-  if (!sharedOrchestrator) {
-    sharedOrchestrator = new Orchestrator();
-  }
-  return sharedOrchestrator;
-}
+// ── MCP integration ───────────────────────────────────────────────────────
+export { PimClawMCPServer } from './master/mcp-server.js';
 
-/**
- * Auto-create default agents based on plugin configuration.
- */
-async function autoCreateAgents(orchestrator: Orchestrator, config: PimClawConfig, log: PluginLogger): Promise<void> {
-  if (config.perfMcp) {
-    try {
-      await orchestrator.createAgent("perf", "Performance Data Agent", { perf: config.perfMcp });
-      log.info("pimclaw: auto-created perf agent");
-    } catch (err) {
-      log.error(`pimclaw: failed to auto-create perf agent: ${err instanceof Error ? err.message : String(err)}`);
-    }
-  }
+// ── Configuration ─────────────────────────────────────────────────────────
+export { ConfigurationManager } from './config-manager.js';
+export type { PimClawConfig } from './config-manager.js';
 
-  // Always create analyst (no MCP dependency — it analyzes data from perf agent)
-  try {
-    await orchestrator.createAgent("analyst", "Performance Analyst Agent");
-    log.info("pimclaw: auto-created analyst agent");
-  } catch (err) {
-    log.error(`pimclaw: failed to auto-create analyst agent: ${err instanceof Error ? err.message : String(err)}`);
-  }
-
-  if (config.monMcp) {
-    try {
-      await orchestrator.createAgent("mon", "Runtime Monitor Agent", { mon: config.monMcp });
-      log.info("pimclaw: auto-created mon agent");
-    } catch (err) {
-      log.error(`pimclaw: failed to auto-create mon agent: ${err instanceof Error ? err.message : String(err)}`);
-    }
-  }
-
-  if (config.simMcp) {
-    try {
-      await orchestrator.createAgent("sim", "Simulation Agent", { sim: config.simMcp });
-      log.info("pimclaw: auto-created sim agent");
-    } catch (err) {
-      log.error(`pimclaw: failed to auto-create sim agent: ${err instanceof Error ? err.message : String(err)}`);
-    }
-  }
-}
-
-/**
- * PimClaw OpenClaw plugin definition.
- */
-export default definePluginEntry({
-  id: "pimclaw",
-  name: "PimClaw",
-  description: "Pagoda Inference Model Claw — Multi-agent system for LLM inference model performance management",
-
-  register(api) {
-    const config = parseConfig(api.pluginConfig);
-    const orchestrator = getOrchestrator();
-    const supervisor = new Supervisor(orchestrator);
-
-    api.logger.info("pimclaw: plugin registered");
-
-    // Register all master agent tools as AnyAgentTool objects
-    const masterTools = buildMasterTools(orchestrator);
-
-    for (const tool of masterTools) {
-      api.registerTool({
-        name: tool.name,
-        description: tool.description,
-        parameters: tool.inputSchema,
-        execute: async (_toolCallId: string, rawParams: Record<string, unknown>) => {
-          return tool.execute(rawParams);
-        },
-      } as AnyAgentTool);
-    }
-
-    // Register supervisor health check tool
-    api.registerTool({
-      name: "pimclaw_health",
-      description: "Get a health report for all PimClaw sub-agents",
-      parameters: { type: "object" as const, properties: {} },
-      execute: async () => ({
-        content: [{ type: "text" as const, text: JSON.stringify(supervisor.report(), null, 2) }],
-      }),
-    } as AnyAgentTool);
-
-    // Register the orchestrator as a service for lifecycle management
-    api.registerService({
-      id: "pimclaw",
-      start: async () => {
-        if (config.autoCreateAgents !== false) {
-          await autoCreateAgents(orchestrator, config, api.logger);
-        }
-        api.logger.info("pimclaw: service started");
-      },
-      stop: async () => {
-        await orchestrator.shutdown();
-        sharedOrchestrator = null;
-        api.logger.info("pimclaw: service stopped");
-      },
-    });
-  },
-});
-
-export { Orchestrator } from "./master/orchestrator.js";
-export { Router } from "./master/router.js";
-export { Supervisor } from "./master/supervisor.js";
-export { createPimClawMcpServer, servePimClawMcp } from "./mcp/server.js";
-export type { PimClawConfig } from "./config.js";
+// ── Types ─────────────────────────────────────────────────────────────────
+export * from './types/index.js';
+export * from './types/agents.js';
+export * from './types/tasks.js';
+export * from './types/models.js';

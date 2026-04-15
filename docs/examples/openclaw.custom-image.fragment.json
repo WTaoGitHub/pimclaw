@@ -1,0 +1,59 @@
+{
+  "agents": {
+    "defaults": {
+      "workspace": "/home/node/.openclaw/workspace"
+    },
+    "list": [
+      {
+        "id": "pimclaw-head",
+        "name": "pimclaw-head",
+        "workspace": "/home/node/.openclaw/workspaces/pimclaw-head",
+        "agentDir": "/home/node/.openclaw/agents/pimclaw-head/agent",
+        "tools": {
+          "profile": "full",
+          "allow": [
+            "pimclaw_submit_anomalies",
+            "pimclaw_query_metrics"
+          ]
+        },
+        "skills": [],
+        "thinkingDefault": "off"
+      },
+      {
+        "id": "pimclaw-planner",
+        "name": "pimclaw-planner",
+        "workspace": "/home/node/.openclaw/workspaces/pimclaw-planner",
+        "agentDir": "/home/node/.openclaw/agents/pimclaw-planner/agent",
+        "tools": {
+          "profile": "full",
+          "allow": [
+            "pimclaw_plan_task",
+            "pimclaw_query_perfllm",
+            "pimclaw_get_perfllm_schema",
+            "pimclaw_sim_register_hardware",
+            "pimclaw_sim_list_hardware",
+            "pimclaw_sim_start",
+            "pimclaw_sim_stop",
+            "pimclaw_sim_status",
+            "pimclaw_sim_benchmark",
+            "pimclaw_sim_dataset_info"
+          ]
+        },
+        "skills": [],
+        "thinkingDefault": "high"
+      }
+    ]
+  },
+  "plugins": {
+    "entries": {
+      "pimclaw": {
+        "enabled": true
+      }
+    },
+    "load": {
+      "paths": [
+        "/app/extensions/pimclaw"
+      ]
+    }
+  }
+}

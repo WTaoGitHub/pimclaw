@@ -1,0 +1,12 @@
+openclaw cron add \
+  --name "pimclaw-head" \
+  --agent pimclaw-head \
+  --cron "*/5 * * * *" \
+  --session isolated \
+  --session-key "pimclaw-head-session" \
+  --message "Run your monitoring cycle: call pimclaw_query_metrics with rangeMinutes 5, compare with prior observations, and call pimclaw_submit_anomalies if you detect meaningful anomalies." \
+  --tools "pimclaw_submit_anomalies,pimclaw_query_metrics" \
+  --thinking off \
+  --timeout-seconds 120 \
+  --light-context \
+  --no-deliver
