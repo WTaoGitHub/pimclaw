@@ -40,7 +40,14 @@ import {
   ALL_ENGINES,
 } from './master/prometheus-client.js';
 import type { InferenceEngine, PrometheusQueryMap } from './master/prometheus-client.js';
-import { MetricsStore, extractMetricValue } from './master/metrics-store.js';
+import { MetricsStore, extractMetricValue, DeploymentMetrics } from './master/metrics-store.js';
+import {
+  HeadSummaryStore,
+  type HeadMonitoringAnomalyRow,
+  type HeadMonitoringDeploymentSummary,
+  type HeadMonitoringSummaryRecord,
+  type SummaryMetricName,
+} from './master/head-summary-store.js';
 import { EngineMcpClient } from './master/engine-mcp-client.js';
 import type { EngineMcpConfig } from './master/engine-mcp-client.js';
 import { PerfMcpClient } from './master/perf-mcp-client.js';
@@ -138,6 +145,7 @@ let prometheusQueryOverrides: Record<string, string> = {};
 let prometheusDefaultLabels: Record<string, string> = {};
 let activeEngines: InferenceEngine[] = [...ALL_ENGINES];
 let metricsStore: MetricsStore | null = null;
+let headSummaryStore: HeadSummaryStore | null = null;
 let pluginConfig: Record<string, unknown> = {};
 let pluginRuntime: unknown = null;
 let plannerFallbackTaskType: 'scale-up' | 'scale-down' | 'restart' | 'reconfigure' = 'scale-up';
@@ -145,8 +153,169 @@ let plannerFallbackConfig: Record<string, unknown> = { replicaDelta: 1 };
 let planningTimeoutMs = 600_000;
 let pluginLogger: OpenClawPluginServiceContext['logger'] | null = null;
 const planningFallbackTimers: Map<string, ReturnType<typeof setTimeout>> = new Map();
+const currentHeadRunIds: Map<string, string> = new Map();
 const toolHooks: ToolHook[] = [];
 const execFileAsync = promisify(execFile);
+const summaryMetrics: SummaryMetricName[] = [
+  'ttft',
+  'tpot',
+  'qps',
+  'throughput',
+  'gpu_utilization',
+  'error_rate',
+];
+
+function normalizeMetricNumber(value: number | null): number | null {
+  if (value == null || Number.isNaN(value) || !Number.isFinite(value)) {
+    return null;
+  }
+  return value;
+}
+
+function extractSummaryMetricValue(result: unknown): number | null {
+  if (!Array.isArray(result) || result.length === 0) {
+    return null;
+  }
+
+  const first = result[0] as any;
+  if (first?.value) {
+    return normalizeMetricNumber(parseFloat(first.value[1]));
+  }
+
+  if (!Array.isArray(first?.values) || first.values.length === 0) {
+    return null;
+  }
+
+  const numericValues = first.values
+    .map((entry: [number, string]) => parseFloat(entry[1]))
+    .filter((value: number) => Number.isFinite(value));
+
+  if (numericValues.length === 0) {
+    return null;
+  }
+
+  const total = numericValues.reduce((sum: number, value: number) => sum + value, 0);
+  return total / numericValues.length;
+}
+
+function collectDeploymentNames(
+  engineResults: Record<string, unknown>,
+  metrics: readonly string[],
+): string[] {
+  const deploymentNames = new Set<string>();
+  for (const metric of metrics) {
+    const results = engineResults[metric] as any[];
+    if (!Array.isArray(results)) {
+      continue;
+    }
+    for (const result of results) {
+      if (typeof result?.metric?.model_name === 'string') {
+        deploymentNames.add(result.metric.model_name);
+      }
+    }
+  }
+  return Array.from(deploymentNames).sort();
+}
+
+function getDeploymentMetricResult(
+  engineResults: Record<string, unknown>,
+  metric: string,
+  deploymentName: string,
+): unknown {
+  const results = engineResults[metric] as any[];
+  if (!Array.isArray(results)) {
+    return null;
+  }
+  const match = results.find((result) => result?.metric?.model_name === deploymentName);
+  return match ? [match] : null;
+}
+
+function createDeploymentSummary(
+  deploymentName: string,
+  engine: string,
+  engineResults: Record<string, unknown>,
+  store: HeadSummaryStore,
+  runId: string,
+): HeadMonitoringDeploymentSummary {
+  return {
+    deploymentName,
+    engine,
+    metricTable: summaryMetrics.map((metric) => ({
+      metric,
+      currentValue: extractSummaryMetricValue(getDeploymentMetricResult(engineResults, metric, deploymentName)),
+      priorValue: store.findPreviousMetricValue(deploymentName, engine, metric, runId),
+    })),
+    anomalyTable: [],
+  };
+}
+
+function buildHeadSummaryRecord(
+  sessionId: string,
+  grouped: Record<string, Record<string, unknown>>,
+  engines: InferenceEngine[],
+  runId: string,
+  store: HeadSummaryStore,
+): HeadMonitoringSummaryRecord {
+  const deployments: HeadMonitoringDeploymentSummary[] = [];
+
+  for (const engine of engines) {
+    const engineResults = grouped[engine];
+    if (!engineResults) {
+      continue;
+    }
+
+    const deploymentNames = collectDeploymentNames(engineResults, summaryMetrics);
+    for (const deploymentName of deploymentNames) {
+      deployments.push(createDeploymentSummary(deploymentName, engine, engineResults, store, runId));
+    }
+  }
+
+  return {
+    ts: Date.now(),
+    runId,
+    sessionId,
+    deployments,
+  };
+}
+
+function mergeAnomaliesIntoSummary(
+  summary: HeadMonitoringSummaryRecord,
+  events: Array<AnomalyEvent & { eventId: string }>,
+): HeadMonitoringSummaryRecord {
+  for (const event of events) {
+    let deploymentSummary = summary.deployments.find(
+      (deployment) => deployment.deploymentName === event.deploymentName,
+    );
+
+    if (!deploymentSummary) {
+      deploymentSummary = {
+        deploymentName: event.deploymentName,
+        engine: 'unknown',
+        metricTable: [],
+        anomalyTable: [],
+      };
+      summary.deployments.push(deploymentSummary);
+    }
+
+    const anomalyRow: HeadMonitoringAnomalyRow = {
+      anomalyIdOrName: event.eventId,
+      metric: event.metricName,
+      severity: event.severity,
+      observation: event.reasoning?.trim() || `${event.type} detected`,
+    };
+
+    const existingIndex = deploymentSummary.anomalyTable.findIndex(
+      (row) => row.anomalyIdOrName === anomalyRow.anomalyIdOrName,
+    );
+    if (existingIndex >= 0) {
+      deploymentSummary.anomalyTable[existingIndex] = anomalyRow;
+    } else {
+      deploymentSummary.anomalyTable.push(anomalyRow);
+    }
+  }
+
+  return summary;
+}
 
 function getPluginConfig(ctx?: OpenClawPluginServiceContext): Record<string, unknown> {
   const serviceConfig = ctx?.config && typeof ctx.config === 'object'
@@ -168,16 +337,21 @@ interface PlannerSubmission {
 }
 
 async function applyPlannerSubmission(submission: PlannerSubmission): Promise<{ success: true; taskId: string; message: string } | { error: string }> {
+  pluginLogger?.debug(`[PlanTask] applyPlannerSubmission called`, { taskId: submission.taskId, taskType: submission.taskType });
+
   if (!taskRecorder) {
+    pluginLogger?.debug(`[PlanTask] service not running, rejecting submission`);
     return { error: 'PimClaw service not running' };
   }
 
   const task = taskRecorder.getTask(submission.taskId);
   if (!task) {
+    pluginLogger?.debug(`[PlanTask] task not found`, { taskId: submission.taskId });
     return { error: `Task ${submission.taskId} not found` };
   }
 
   if (task.status !== 'planning') {
+    pluginLogger?.debug(`[PlanTask] invalid task status`, { taskId: submission.taskId, currentStatus: task.status });
     return { error: `Task ${submission.taskId} is in '${task.status}' state, expected 'planning'` };
   }
 
@@ -188,8 +362,10 @@ async function applyPlannerSubmission(submission: PlannerSubmission): Promise<{ 
   task.simulationResults = submission.simulationResults;
 
   clearPlanningFallback(submission.taskId);
+  pluginLogger?.debug(`[PlanTask] fallback timer cleared`, { taskId: submission.taskId });
   await taskRecorder.updateTaskStatus(submission.taskId, 'ready');
 
+  pluginLogger?.debug(`[PlanTask] task transitioned planning → ready`, { taskId: submission.taskId });
   return {
     success: true,
     taskId: submission.taskId,
@@ -334,6 +510,7 @@ function createPimClawService(): OpenClawPluginService {
       taskRecorder = new TaskStatusRecorder(
         `${ctx.stateDir}/pimclaw-tasks`,
         registry,
+        ctx.logger,
       );
       await taskRecorder.initialize();
 
@@ -356,7 +533,7 @@ function createPimClawService(): OpenClawPluginService {
         agentId: plannerConfig.agentId ?? 'pimclaw-planner',
         timeoutSeconds: plannerConfig.timeoutSeconds ?? 600,
         workspaceDir: plannerWorkspaceDir,
-      }, registry);
+      }, registry, ctx.logger);
 
       ctx.logger.info(
         `[PimClaw] Dedicated agent workspaces ready: head=${headWorkspaceDir}, planner=${plannerWorkspaceDir}`,
@@ -379,10 +556,11 @@ function createPimClawService(): OpenClawPluginService {
           },
         },
         registry,
+        ctx.logger,
       );
 
       // 4. Scheduler — polls for ready tasks, spawns Workers
-      scheduler = new SchedulerAgent(registry, taskRecorder, undefined, taskExecutor ?? undefined);
+      scheduler = new SchedulerAgent(registry, taskRecorder, undefined, taskExecutor ?? undefined, ctx.logger);
       await scheduler.initialize();
       scheduler.run().catch((err) =>
         ctx.logger.error(`[PimClaw] Scheduler error: ${err}`),
@@ -410,6 +588,10 @@ function createPimClawService(): OpenClawPluginService {
       metricsStore = new MetricsStore(`${ctx.stateDir}`, 1000);
       await metricsStore.load();
       ctx.logger.info(`[PimClaw] MetricsStore loaded (${metricsStore.size} existing records)`);
+
+      headSummaryStore = new HeadSummaryStore(headWorkspaceDir, 10);
+      await headSummaryStore.load();
+      ctx.logger.info(`[PimClaw] HeadSummaryStore loaded (${headSummaryStore.size} existing records)`);
 
       // 6. EngineMcpClient + TaskExecutor — for Worker execution via qianjin-xuntui MCP
       const engineCfg = (config as any)?.engineMcp;
@@ -515,6 +697,11 @@ function createPimClawService(): OpenClawPluginService {
         await metricsStore.flush();
         metricsStore = null;
       }
+      if (headSummaryStore) {
+        await headSummaryStore.flush();
+        headSummaryStore = null;
+      }
+      currentHeadRunIds.clear();
       prometheusClient = null;
       prometheusQueryOverrides = {};
       prometheusDefaultLabels = {};
@@ -564,7 +751,7 @@ function buildPimClawTools() {
         },
       },
     },
-    async execute(_sessionId: string, params: Record<string, unknown>) {
+    async execute(sessionId: string, params: Record<string, unknown>) {
       if (!prometheusClient) {
         return {
           output: JSON.stringify({
@@ -618,27 +805,57 @@ function buildPimClawTools() {
         }
 
         grouped[engine] = engineResults;
-
-        // Persist per-engine snapshot to MetricsStore
-        if (metricsStore) {
-          const metricsValues: Record<string, number | null> = {};
-          for (const metric of requestedMetrics) {
-            if (metric in engineResults) {
-              metricsValues[metric] = extractMetricValue(engineResults[metric]);
-            }
-          }
-          metricsStore.add({
-            ts: Date.now(),
-            engine,
-            deployment: deploymentName,
-            metrics: metricsValues,
-          });
-        }
       }
 
-      // Best-effort async flush after all engines
+      // Persist a single record with per-deployment flat metrics
       if (metricsStore) {
+        const allDeploymentMetrics: DeploymentMetrics[] = [];
+
+        for (const engine of engines) {
+          const engineResults = grouped[engine];
+          if (!engineResults) continue;
+
+          // Collect unique deployment names across all metrics for this engine
+          const deploymentNames = collectDeploymentNames(engineResults, requestedMetrics);
+
+          // Build a flat entry per deployment
+          for (const depName of deploymentNames) {
+            const entry: DeploymentMetrics = {
+              deployments: depName,
+              engine,
+              ttft: 0, tpot: 0, qps: 0,
+              throughput: 0, gpu_utilization: 0, error_rate: 0,
+            };
+            for (const metric of summaryMetrics) {
+              const results = engineResults[metric] as any[];
+              if (Array.isArray(results)) {
+                const match = results.find((r: any) => r?.metric?.model_name === depName);
+                if (match) {
+                  const val = extractMetricValue([match]);
+                  entry[metric] = val != null && !Number.isNaN(val) ? val : 0;
+                }
+              }
+            }
+            allDeploymentMetrics.push(entry);
+          }
+        }
+
+        metricsStore.add({ ts: Date.now(), metrics: allDeploymentMetrics });
         metricsStore.flush().catch(() => {});
+      }
+
+      if (headSummaryStore && typeof rangeMinutes === 'number' && rangeMinutes > 0) {
+        const runId = uuidv4();
+        const summaryRecord = buildHeadSummaryRecord(
+          sessionId,
+          grouped,
+          engines,
+          runId,
+          headSummaryStore,
+        );
+        headSummaryStore.upsert(summaryRecord);
+        currentHeadRunIds.set(sessionId, runId);
+        headSummaryStore.flush().catch(() => {});
       }
 
       return { output: JSON.stringify(grouped) };
@@ -674,13 +891,26 @@ function buildPimClawTools() {
       },
       required: ['events'],
     },
-    async execute(_sessionId: string, params: Record<string, unknown>) {
+    async execute(sessionId: string, params: Record<string, unknown>) {
       if (!anomalyReceiver) {
         return { output: JSON.stringify({ error: 'PimClaw service not running' }) };
       }
       try {
         const events = params.events as AnomalyEvent[];
         const validated = await anomalyReceiver.receive(events);
+
+        if (headSummaryStore) {
+          const runId = currentHeadRunIds.get(sessionId);
+          if (runId) {
+            const summary = headSummaryStore.getByRunId(runId);
+            if (summary) {
+              mergeAnomaliesIntoSummary(summary, validated);
+              headSummaryStore.upsert(summary);
+              headSummaryStore.flush().catch(() => {});
+            }
+          }
+        }
+
         return {
           output: JSON.stringify({
             success: true,
@@ -731,6 +961,7 @@ function buildPimClawTools() {
       required: ['taskId', 'taskType', 'config', 'reasoning'],
     },
     async execute(_sessionId: string, params: Record<string, unknown>) {
+      pluginLogger?.debug(`[PlanTask] tool invoked`, { taskId: params.taskId, taskType: params.taskType });
       try {
         const result = await applyPlannerSubmission({
           taskId: params.taskId as string,
@@ -741,8 +972,10 @@ function buildPimClawTools() {
           simulationResults: params.simulationResults as string | undefined,
         });
 
+        pluginLogger?.debug(`[PlanTask] tool result`, { taskId: params.taskId, success: !('error' in result) });
         return { output: JSON.stringify(result) };
       } catch (err) {
+        pluginLogger?.debug(`[PlanTask] tool error`, { taskId: params.taskId, error: err instanceof Error ? err.message : String(err) });
         return {
           output: JSON.stringify({
             error: err instanceof Error ? err.message : String(err),

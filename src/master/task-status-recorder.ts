@@ -5,6 +5,7 @@
 
 import { Task, TaskStatus } from '../types/index.js';
 import { ComponentRegistry } from './component-registry.js';
+import type { PluginLogger } from 'openclaw/plugin-sdk/plugin-entry';
 import fs from 'fs/promises';
 import path from 'path';
 
@@ -16,6 +17,7 @@ export class TaskStatusRecorder {
   private tasks: Map<string, Task> = new Map();
   private readonly storagePath: string;
   private readonly registry: ComponentRegistry | null;
+  private readonly logger: PluginLogger | null;
   private readonly agentId = 'task-status-recorder';
   private readonly allowedTransitions: Record<TaskStatus, TaskStatus[]> = {
     planning: ['ready', 'expired'],
@@ -28,15 +30,28 @@ export class TaskStatusRecorder {
     expired: [],
   };
 
-  constructor(storagePath: string = './pimclaw-tasks', registry?: ComponentRegistry) {
+  constructor(storagePath: string = './pimclaw-tasks', registry?: ComponentRegistry, logger?: PluginLogger) {
     this.storagePath = storagePath;
     this.registry = registry ?? null;
+    this.logger = logger ?? null;
+  }
+
+  private debug(message: string, context?: Record<string, unknown>): void {
+    if (context) {
+      this.logger?.debug(`[TaskStatusRecorder] ${message}`, context);
+      if (!this.logger) console.debug(`[TaskStatusRecorder] ${message}`, context);
+      return;
+    }
+    this.logger?.debug(`[TaskStatusRecorder] ${message}`);
+    if (!this.logger) console.debug(`[TaskStatusRecorder] ${message}`);
   }
 
   /**
    * Initialize the recorder, loading persisted tasks from storage
    */
   async initialize(): Promise<void> {
+    this.debug('initializing', { storagePath: this.storagePath });
+
     // Register with ComponentRegistry if provided
     if (this.registry) {
       this.registry.registerAgent({
@@ -58,6 +73,7 @@ export class TaskStatusRecorder {
 
       // Restore tasks and mark stale ones as expired
       const now = new Date();
+      let expiredCount = 0;
       for (const [id, task] of Object.entries(loadedTasks)) {
         // Mark ready tasks as expired if older than 1 min
         if (
@@ -66,6 +82,7 @@ export class TaskStatusRecorder {
         ) {
           task.status = 'expired';
           task.statusModifiedAt = now;
+          expiredCount++;
         }
 
         // Mark scheduling tasks as expired if status unchanged for >30s
@@ -75,6 +92,7 @@ export class TaskStatusRecorder {
         ) {
           task.status = 'expired';
           task.statusModifiedAt = now;
+          expiredCount++;
         }
 
         // Mark planning tasks as expired if status unchanged for >10min
@@ -84,14 +102,17 @@ export class TaskStatusRecorder {
         ) {
           task.status = 'expired';
           task.statusModifiedAt = now;
+          expiredCount++;
         }
 
         this.tasks.set(id, task);
       }
 
+      this.debug('loaded persisted tasks', { total: this.tasks.size, expiredOnLoad: expiredCount });
       await this.persist();
     } catch {
       // No stored file yet, start fresh
+      this.debug('no persisted tasks found, starting fresh');
       await fs.mkdir(this.storagePath, { recursive: true });
     }
 
@@ -105,6 +126,7 @@ export class TaskStatusRecorder {
    * Create a new task
    */
   async createTask(task: Task): Promise<void> {
+    this.debug('creating task', { taskId: task.taskId, status: task.status });
     this.tasks.set(task.taskId, task);
     await this.persist();
   }
@@ -139,15 +161,17 @@ export class TaskStatusRecorder {
       throw new Error(`Task ${taskId} not found`);
     }
 
-    if (task.status !== newStatus) {
-      const validNext = this.allowedTransitions[task.status] || [];
+    const oldStatus = task.status;
+    if (oldStatus !== newStatus) {
+      const validNext = this.allowedTransitions[oldStatus] || [];
       if (!validNext.includes(newStatus)) {
         throw new Error(
-          `Invalid status transition for task ${taskId}: ${task.status} -> ${newStatus}`,
+          `Invalid status transition for task ${taskId}: ${oldStatus} -> ${newStatus}`,
         );
       }
     }
 
+    this.debug('status transition', { taskId, from: oldStatus, to: newStatus });
     task.status = newStatus;
     task.statusModifiedAt = new Date();
     await this.persist();
@@ -173,6 +197,7 @@ export class TaskStatusRecorder {
       task.error = error;
       task.status = 'failed';
     }
+    this.debug('task result updated', { taskId, outcome: result ? 'done' : 'failed' });
     task.completedAt = new Date();
     task.statusModifiedAt = new Date();
     await this.persist();
@@ -193,6 +218,7 @@ export class TaskStatusRecorder {
     }
     task.status = 'ready';
     task.retryCount++;
+    this.debug('task reset for retry', { taskId, retryCount: task.retryCount, maxRetries: task.maxRetries });
     task.statusModifiedAt = new Date();
     task.result = undefined;
     task.error = undefined;
@@ -231,6 +257,7 @@ export class TaskStatusRecorder {
       tasksObj[id] = task;
     }
     const tasksFile = path.join(this.storagePath, 'tasks.json');
+    this.debug('persisting tasks', { count: this.tasks.size });
     await fs.writeFile(tasksFile, JSON.stringify(tasksObj, null, 2), 'utf-8');
   }
 }

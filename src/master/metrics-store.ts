@@ -6,15 +6,24 @@
 import fs from 'fs/promises';
 import path from 'path';
 
+export interface DeploymentMetrics {
+  /** model_name label from Prometheus */
+  deployments: string;
+  /** Inference engine (vllm or sglang) */
+  engine: string;
+  ttft: number;
+  tpot: number;
+  qps: number;
+  throughput: number;
+  gpu_utilization: number;
+  error_rate: number;
+}
+
 export interface MetricsRecord {
   /** Unix epoch milliseconds */
   ts: number;
-  /** Inference engine that produced this record */
-  engine?: string;
-  /** Deployment name (if filtered) */
-  deployment?: string;
-  /** Metric values — null means fetch failed for that metric */
-  metrics: Record<string, number | null>;
+  /** Per-deployment metric snapshots */
+  metrics: DeploymentMetrics[];
 }
 
 export class MetricsStore {

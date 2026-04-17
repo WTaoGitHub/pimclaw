@@ -5,6 +5,7 @@
 
 import type { ValidatedEvent } from './anomaly-receiver.js';
 import type { ComponentRegistry } from './component-registry.js';
+import type { PluginLogger } from 'openclaw/plugin-sdk/plugin-entry';
 
 export interface OpenClawAgentApi {
   triggerAgent(agentId: string, options: {
@@ -37,12 +38,14 @@ export class PlannerTrigger {
   private openclawApi: OpenClawAgentApi;
   private config: PlannerTriggerConfig;
   private readonly registry: ComponentRegistry | null;
+  private readonly logger: PluginLogger | null;
   private readonly agentId = 'planner-trigger';
 
-  constructor(openclawApi: OpenClawAgentApi, config?: Partial<PlannerTriggerConfig>, registry?: ComponentRegistry) {
+  constructor(openclawApi: OpenClawAgentApi, config?: Partial<PlannerTriggerConfig>, registry?: ComponentRegistry, logger?: PluginLogger) {
     this.openclawApi = openclawApi;
     this.config = { ...DEFAULT_CONFIG, ...config };
     this.registry = registry ?? null;
+    this.logger = logger ?? null;
 
     if (this.registry) {
       this.registry.registerAgent({
@@ -58,8 +61,31 @@ export class PlannerTrigger {
     }
   }
 
+  private debug(message: string, context?: Record<string, unknown>): void {
+    if (context) {
+      this.logger?.debug(`[PlannerTrigger] ${message}`, context);
+      if (!this.logger) console.debug(`[PlannerTrigger] ${message}`, context);
+      return;
+    }
+    this.logger?.debug(`[PlannerTrigger] ${message}`);
+    if (!this.logger) console.debug(`[PlannerTrigger] ${message}`);
+  }
+
   async trigger(event: ValidatedEvent, taskId: string): Promise<void> {
+    this.debug('triggering planner', {
+      taskId,
+      eventType: event.type,
+      severity: event.severity,
+      deploymentName: event.deploymentName,
+      metricName: event.metricName,
+    });
+
     const payload: PlannerTriggerPayload = { event, taskId };
+    this.debug('calling OpenClaw agent API', {
+      agentId: this.config.agentId,
+      timeoutSeconds: this.config.timeoutSeconds,
+    });
+
     await this.openclawApi.triggerAgent(this.config.agentId, {
       task: [
         'Plan optimal config for the anomaly described in the JSON payload below.',
@@ -75,5 +101,7 @@ export class PlannerTrigger {
         content: JSON.stringify(payload),
       }],
     });
+
+    this.debug('planner trigger completed', { taskId });
   }
 }

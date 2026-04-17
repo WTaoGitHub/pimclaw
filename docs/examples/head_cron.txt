@@ -7,6 +7,70 @@ openclaw cron add \
   --message "Run your monitoring cycle: call pimclaw_query_metrics with rangeMinutes 5, compare with prior observations, and call pimclaw_submit_anomalies if you detect meaningful anomalies." \
   --tools "pimclaw_submit_anomalies,pimclaw_query_metrics" \
   --thinking off \
-  --timeout-seconds 120 \
+  --timeout-seconds 300 \
+  --light-context \
+  --no-deliver
+
+  openclaw cron add \
+  --name "pimclaw-head" \
+  --agent pimclaw-head \
+  --cron "*/5 * * * *" \
+  --session main \
+  --tools "pimclaw_submit_anomalies,pimclaw_query_metrics" \
+  --thinking off \
+  --timeout-seconds 300 \
+  --light-context \
+  --no-deliver \
+  --system-event "Hey, Pimclaw-head, get to work!"
+
+
+  openclaw cron add \
+  --name "workflowToM2.5" \
+  --agent main \
+  --cron "* * * * *" \
+  --session isolated \
+  --session-key "cron" \
+  --message "写一首诗" \
+  --thinking high \
+  --timeout-seconds 240 \
+  --light-context \
+  --no-deliver
+
+    openclaw cron add \
+  --name "workflowToM2.5-1" \
+  --agent main \
+  --cron "* * * * *" \
+  --session isolated \
+  --session-key "cron-1" \
+  --message "读取本地workspace目录下的me.out文件,如果不存在则创建一个空文件并把太阳耀斑作为初始文件内容，根据文件的内容进行处理分析其产生的原因并推断其可能产生的新现象，把新的现象记录到本地workspace目录下的me.out文件。" \
+  --thinking high \
+  --timeout-seconds 240 \
+  --light-context \
+  --no-deliver
+
+
+    openclaw cron add \
+  --name "workflowToM2.5-2" \
+  --agent main \
+  --cron "* * * * *" \
+  --session isolated \
+  --session-key "cron-2" \
+  --message "读取本地workspace目录下的me_黑洞.out文件,如果不存在则创建一个空文件并把黑洞作为初始文件内容，根据文件的内容进行处理分析其产生的原因并推断其可能产生的新现象，把新的现象记录到本地workspace目录下的me.out文件。" \
+  --thinking high \
+  --timeout-seconds 240 \
+  --light-context \
+  --no-deliver
+
+
+
+      openclaw cron add \
+  --name "workflowToM2.5-3" \
+  --agent main \
+  --cron "* * * * *" \
+  --session isolated \
+  --session-key "cron-3" \
+  --message "读取本地workspace目录下的me_量子计算.out文件,如果不存在则创建一个空文件并把量子计算作为初始文件内容，根据文件的内容进行处理分析其产生的原因并推断其可能产生的新现象，把新的现象记录到本地workspace目录下的me.out文件。" \
+  --thinking high \
+  --timeout-seconds 240 \
   --light-context \
   --no-deliver
