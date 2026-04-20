@@ -36,6 +36,8 @@ export interface Task {
   completedAt?: Date;
   result?: Record<string, unknown>;
   error?: string;
+  plannerTriggerError?: string;
+  plannerTriggerErrorAt?: Date;
 }
 
 /**

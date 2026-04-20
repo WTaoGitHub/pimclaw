@@ -52,6 +52,10 @@ export class WorkerAgent extends BaseAgent {
     if (!this.logger) console.debug(`[Worker] ${message}`);
   }
 
+  private isRetryableError(errorMessage: string): boolean {
+    return !errorMessage.includes('No TaskExecutor available');
+  }
+
   /**
    * Execute the assigned task
    */
@@ -139,7 +143,7 @@ export class WorkerAgent extends BaseAgent {
       }
 
       // Handle retry logic (skip if aborted — don't retry aborted tasks)
-      if (!this.aborted && this.task.retryCount < this.task.maxRetries) {
+      if (!this.aborted && this.isRetryableError(errorMessage) && this.task.retryCount < this.task.maxRetries) {
         // Reset task to ready for retry
         this.debug('resetting task for retry', { taskId: this.task.taskId, retryCount: this.task.retryCount, maxRetries: this.task.maxRetries });
         await this.taskRecorder.resetTaskForRetry(this.task.taskId);

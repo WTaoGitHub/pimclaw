@@ -362,6 +362,15 @@ interface PlannerSubmission {
   simulationResults?: string;
 }
 
+function extractExpectedTaskId(taskInstruction: string): string | undefined {
+  try {
+    const bare = taskInstruction.match(/"taskId"\s*:\s*"([^"]+)"/);
+    return bare?.[1];
+  } catch {
+    return undefined;
+  }
+}
+
 async function applyPlannerSubmission(submission: PlannerSubmission): Promise<{ success: true; taskId: string; message: string } | { error: string }> {
   pluginLogger?.debug(`[PlanTask] applyPlannerSubmission called`, { taskId: submission.taskId, taskType: submission.taskType });
 
@@ -387,7 +396,7 @@ async function applyPlannerSubmission(submission: PlannerSubmission): Promise<{ 
     source: 'planner-agent',
     hasPerfEvidence: !!submission.perfEvidence,
     hasSimulationResults: !!submission.simulationResults,
-    reasoningSnippet: submission.reasoning?.slice(0, 120),
+    reasoningSnippet: submission.reasoning,
   });
   task.taskType = submission.taskType;
   task.config = submission.config;
@@ -410,6 +419,7 @@ async function applyPlannerSubmission(submission: PlannerSubmission): Promise<{ 
 function createCliPlannerAgentApi(ctx: OpenClawPluginServiceContext): OpenClawAgentApi {
   return {
     async triggerAgent(agentId, options) {
+      const expectedTaskId = extractExpectedTaskId(options.task);
       const plannerInstruction = [
         options.task,
         'Return only valid JSON with this exact schema:',
@@ -461,6 +471,17 @@ function createCliPlannerAgentApi(ctx: OpenClawPluginServiceContext): OpenClawAg
         throw new Error(`planner CLI run failed: ${parsed.status}`);
       }
 
+      if (expectedTaskId) {
+        const taskStatus = taskRecorder?.getTask(expectedTaskId)?.status;
+        if (taskStatus && taskStatus !== 'planning') {
+          pluginLogger?.debug(`[PlanTask] planner CLI run already applied via tool`, {
+            taskId: expectedTaskId,
+            currentStatus: taskStatus,
+          });
+          return;
+        }
+      }
+
       const plannerText = parsed?.result?.payloads?.map((payload: any) => payload?.text ?? '').join('\n').trim();
       if (!plannerText) {
         throw new Error('planner CLI returned no text payload');
@@ -479,15 +500,6 @@ function createCliPlannerAgentApi(ctx: OpenClawPluginServiceContext): OpenClawAg
             `planner CLI returned no JSON object | raw: ${plannerText.slice(0, 300)}`,
           );
         }
-        // Prefer the candidate whose taskId matches the one in the task payload.
-        // The payload is embedded as JSON inside options.task — extract it.
-        let expectedTaskId: string | undefined;
-        try {
-          // taskId is a top-level field in the payload object
-          const bare = options.task.match(/"taskId"\s*:\s*"([^"]+)"/);
-          expectedTaskId = bare?.[1];
-        } catch { /* ignore */ }
-
         let matched: PlannerSubmission | undefined;
         const parseErrors: string[] = [];
         for (const candidate of candidates) {
@@ -618,7 +630,7 @@ function createPimClawService(): OpenClawPluginService {
       if (!(ctx as any).openclawApi) {
         ctx.logger.info('[PimClaw] Using CLI-based planner trigger fallback');
       }
-      const plannerTrigger = new PlannerTrigger(openclawApi, {
+      const plannerTrigger = new PlannerTrigger(openclawApi, taskRecorder, {
         agentId: plannerConfig.agentId ?? 'pimclaw-planner',
         timeoutSeconds: plannerConfig.timeoutSeconds ?? 600,
         workspaceDir: plannerWorkspaceDir,

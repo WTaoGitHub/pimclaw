@@ -9,12 +9,28 @@ import type { PluginLogger } from 'openclaw/plugin-sdk/plugin-entry';
 import fs from 'fs/promises';
 import path from 'path';
 
+interface TaskStatusWaitEvent {
+  taskId: string;
+  previousStatus: TaskStatus;
+  currentStatus: TaskStatus;
+  task: Task;
+}
+
+interface TaskStatusWaiter {
+  taskId: string;
+  predicate: (event: TaskStatusWaitEvent) => boolean;
+  resolve: (event: TaskStatusWaitEvent) => void;
+  reject: (error: Error) => void;
+  timeoutHandle?: ReturnType<typeof setTimeout>;
+}
+
 /**
  * Central task state manager
  * Stores tasks persistently and manages their lifecycle
  */
 export class TaskStatusRecorder {
   private tasks: Map<string, Task> = new Map();
+  private readonly statusWaiters: Set<TaskStatusWaiter> = new Set();
   private readonly storagePath: string;
   private readonly registry: ComponentRegistry | null;
   private readonly logger: PluginLogger | null;
@@ -44,6 +60,30 @@ export class TaskStatusRecorder {
     }
     this.logger?.debug(`[TaskStatusRecorder] ${message}`);
     if (!this.logger) console.debug(`[TaskStatusRecorder] ${message}`);
+  }
+
+  private emitStatusTransition(taskId: string, previousStatus: TaskStatus, currentStatus: TaskStatus, task: Task): void {
+    const event: TaskStatusWaitEvent = {
+      taskId,
+      previousStatus,
+      currentStatus,
+      task,
+    };
+
+    for (const waiter of Array.from(this.statusWaiters)) {
+      if (waiter.taskId !== taskId) {
+        continue;
+      }
+      if (!waiter.predicate(event)) {
+        continue;
+      }
+
+      this.statusWaiters.delete(waiter);
+      if (waiter.timeoutHandle) {
+        clearTimeout(waiter.timeoutHandle);
+      }
+      waiter.resolve(event);
+    }
   }
 
   /**
@@ -138,6 +178,45 @@ export class TaskStatusRecorder {
     return this.tasks.get(taskId);
   }
 
+  async waitForTaskStatus(
+    taskId: string,
+    predicate: (event: TaskStatusWaitEvent) => boolean,
+    timeoutMs?: number,
+  ): Promise<TaskStatusWaitEvent> {
+    const task = this.tasks.get(taskId);
+    if (!task) {
+      throw new Error(`Task ${taskId} not found`);
+    }
+
+    const currentEvent: TaskStatusWaitEvent = {
+      taskId,
+      previousStatus: task.status,
+      currentStatus: task.status,
+      task,
+    };
+    if (predicate(currentEvent)) {
+      return currentEvent;
+    }
+
+    return new Promise<TaskStatusWaitEvent>((resolve, reject) => {
+      const waiter: TaskStatusWaiter = {
+        taskId,
+        predicate,
+        resolve,
+        reject,
+      };
+
+      if (timeoutMs && timeoutMs > 0) {
+        waiter.timeoutHandle = setTimeout(() => {
+          this.statusWaiters.delete(waiter);
+          reject(new Error(`Timed out waiting for task ${taskId} status change`));
+        }, timeoutMs);
+      }
+
+      this.statusWaiters.add(waiter);
+    });
+  }
+
   /**
    * Get all tasks with a specific status
    */
@@ -174,6 +253,19 @@ export class TaskStatusRecorder {
     this.debug('status transition', { taskId, from: oldStatus, to: newStatus });
     task.status = newStatus;
     task.statusModifiedAt = new Date();
+    await this.persist();
+    this.emitStatusTransition(taskId, oldStatus, newStatus, task);
+  }
+
+  async recordPlannerTriggerFailure(taskId: string, error: string): Promise<void> {
+    const task = this.tasks.get(taskId);
+    if (!task) {
+      throw new Error(`Task ${taskId} not found`);
+    }
+
+    task.plannerTriggerError = error;
+    task.plannerTriggerErrorAt = new Date();
+    this.debug('planner trigger failure recorded', { taskId, error });
     await this.persist();
   }
 

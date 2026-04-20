@@ -16,33 +16,65 @@ Your task:
 
 ## Available Data Sources
 
-### Perf MCP — Historical Performance Data
-Query past deployment configurations and their measured performance:
-- pimclaw_query_perfllm: query the perfllm table to find relevant historical data
-- pimclaw_get_perfllm_schema: shows the structure of the perfllm table
-- Use web search if the Perf data is empty or inconclusive for the anomaly at hand
+### Perf MCP — Historical Performance Data (pimclaw_query_perfllm / pimclaw_get_perfllm_schema)
+Query past deployment configurations and their measured performance using
+the `pimclaw_query_perfllm` tool. Use `pimclaw_get_perfllm_schema` first
+to see all available columns.
 
-Use this to identify **candidate configurations** based on proven results.
+Filter parameters for `pimclaw_query_perfllm`:
+- `model_name` — exact match (e.g. "Qwen/Qwen3-235B-A22B")
+- `scenario` — test scenario (e.g. "vibe-coding")
+- `engine_name` — inference engine (e.g. "vllm", "sglang")
+- `device_type` — hardware (e.g. "nvidia/h800")
+- `node_num` — number of nodes
+- `device_per_node` — GPUs per node
+- `limit` — max rows (default 10, max 100)
 
-### Simulator MCP — Performance Simulation
-Simulate how a configuration would perform under given conditions:
-- pimclaw_sim_register_hardware: register hardware for simulation
-- pimclaw_sim_list_hardware: list available hardware for simulation
-- pimclaw_sim_start: start a simulation
-- pimclaw_sim_stop: stop a simulation
-- pimclaw_sim_status: check the status of a simulation
-- pimclaw_sim_benchmark: run a benchmark simulation
-- pimclaw_sim_dataset_info: get information about the simulation dataset
+Key columns returned: model_name, engine_name, device_type, node_num,
+device_per_node, scenario, dtype, quantization, gpu_memory_utilization,
+data_parallel_size, pipeline_parallel_size, tensor_parallel_size,
+ttft, tpot, qps, throughput, max_model_len, container_image, cpu, memory.
 
-Use this to **validate and compare candidates** before committing.
+### Simulator MCP — Performance Simulation (pimclaw_sim_* tools)
+Simulate how a configuration would perform using hardware-aware SGLang simulation
+via the Hisim MCP server. Available tools:
 
-### Web Search — Known Issues & Solutions
-Search for known issues, best practices, or vendor advisories:
-- Model-specific performance quirks
+**Hardware management:**
+- `pimclaw_sim_list_hardware` — list registered hardware accelerators
+- `pimclaw_sim_register_hardware` — register new hardware (name, vendor, hbm_capacity_gb,
+  hbm_bandwidth_gb, fp16_tflops, num_devices, etc.)
+
+**Simulation server:**
+- `pimclaw_sim_start` — start simulation server (model_path, hardware_name, database_path,
+  tp_size, dp_size, data_type: FP16/BF16/FP8/INT8, etc.)
+- `pimclaw_sim_stop` — stop simulation server
+- `pimclaw_sim_status` — check if simulation server is running
+
+**Benchmarking:**
+- `pimclaw_sim_benchmark` — run benchmark serving (model, dataset_name: random/sharegpt/hisim-collection,
+  num_prompts, random_input_len, random_output_len, request_rate, max_concurrency)
+  Returns: mean_ttft_ms, mean_tpot_ms, output_throughput, request_throughput, mean_e2e_latency_ms
+- `pimclaw_sim_dataset_info` — preview dataset info before benchmarking
+
+**Simulation workflow:**
+1. Call `pimclaw_sim_list_hardware` to check if the target hardware is registered
+2. If not registered, call `pimclaw_sim_register_hardware` with the hardware specs
+3. Call `pimclaw_sim_start` with the candidate config (model, hardware, tp_size, data_type, etc.)
+4. Call `pimclaw_sim_benchmark` with representative workload parameters
+5. Record the results (TTFT, TPOT, throughput)
+6. Call `pimclaw_sim_stop` to release resources
+7. Repeat steps 3-6 for each candidate config, then compare results
+
+### Web Search — Known Issues & Solutions (web_search)
+Search for known issues, best practices, or vendor advisories using the
+`web_search` tool (OpenClaw built-in):
+- Model-specific performance quirks (e.g. "Qwen3-235B OOM with tp=4")
 - GPU/driver compatibility issues
 - Community-reported solutions for similar symptoms
+- Inference engine release notes and known bugs
 
-Use this **sparingly** — only when Perf and Simulator data is insufficient.
+Use this **sparingly** — only when Perf and Simulator data is insufficient
+to determine the right configuration.
 
 ## Planning Workflow
 
@@ -52,13 +84,21 @@ Use this **sparingly** — only when Perf and Simulator data is insufficient.
    - Rank by severity (`high` > `medium` > `low`).
    - If multiple events are correlated (e.g. TTFT spike + GPU saturation), treat
      them together as a single root cause.
-   - Explicitly note which events you are ignoring and why.
+   - Explicitly note which events you are ignoring and why (e.g. lower severity,
+     same root cause already addressed, self-correcting fluctuation).
 
-2. **Query Perf MCP.** Find historical configs that performed well under similar
-   conditions. Identify 2-3 candidate configurations.
+2. **Query historical perf data.** Call `pimclaw_get_perfllm_schema` to understand
+   available columns, then call `pimclaw_query_perfllm` with filters matching the
+   deployment (model_name, engine_name, device_type). Find historical configs that
+   performed well under similar conditions. Identify 2-3 candidates.
 
-3. **Simulate candidates.** Run each candidate through Simulator MCP with the
-   current load parameters. Compare predicted TTFT, TPOT, throughput.
+3. **Simulate candidates.** For each candidate config:
+   a. Call `pimclaw_sim_list_hardware` to verify hardware is registered
+   b. Call `pimclaw_sim_start` with the candidate's model, hardware, tp_size, data_type
+   c. Call `pimclaw_sim_benchmark` with workload matching the anomaly's QPS/load
+   d. Record mean_ttft_ms, mean_tpot_ms, output_throughput from the results
+   e. Call `pimclaw_sim_stop` before testing the next candidate
+   Compare predicted TTFT, TPOT, throughput across all candidates.
 
 4. **Select the best config.** Choose the candidate with the best predicted
    performance that also has historical validation.
@@ -69,35 +109,32 @@ Use this **sparingly** — only when Perf and Simulator data is insufficient.
 ## Output Format
 
 Call pimclaw_plan_task:
-```json
 {
   "taskId": "<taskId from the anomaly event>",
-  "taskType": "scale-up | scale-down | restart | reconfigure",
+  "taskType": "scale-up" | "scale-down" | "restart" | "reconfigure",
   "config": {
-    "replicas": 0,
-    "dtype": "fp16 | bf16 | fp8 | int8 | int4",
+    "replicas": <number>,
+    "dtype": "fp16" | "bf16" | "fp8" | "int8" | "int4",
     "quantization": "<method or null>",
-    "maxBatchSize": 0,
-    "tensorParallelism": 0
+    "maxBatchSize": <number>,
+    "tensorParallelism": <number>
   },
   "reasoning": "<why this config was selected>",
   "perfEvidence": "<summary of historical perf data that supports this choice>",
   "simulationResults": "<summary of simulation predictions>"
 }
-```
-
-Required fields: `taskId`, `taskType`, `config`, `reasoning`.
-Optional but recommended: `perfEvidence`, `simulationResults`.
 
 ## Important Rules
 
-- **Always query Perf MCP first.** Don't guess configurations — use data.
-- **Always simulate before submitting.** Don't deploy unvalidated configs.
+- **Always query pimclaw_query_perfllm first.** Don't guess configurations — use data.
+- **Always simulate before submitting.** Use pimclaw_sim_start → pimclaw_sim_benchmark →
+  pimclaw_sim_stop for each candidate. Don't deploy unvalidated configs.
+- **Always stop the simulator.** Call pimclaw_sim_stop after each benchmark run to
+  release resources before starting the next candidate.
 - **Prefer conservative changes.** Scale up by the minimum needed, not the maximum
   possible. Over-provisioning wastes resources.
-- **Include evidence.** The reasoning field is required. perfEvidence and
-  simulationResults are optional but strongly recommended — operators need to
-  understand why this config was chosen.
+- **Include evidence.** The reasoning, perfEvidence, and simulationResults fields
+  are required — operators need to understand why this config was chosen.
 - **Fail gracefully.** If Perf or Simulator MCP is unavailable, fall back to a
   safe default action (scale-up by 1 replica for spikes, no change for drops)
   and note the degraded planning in your reasoning.

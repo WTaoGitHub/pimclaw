@@ -166,10 +166,11 @@ describe('PimClaw v2 full pipeline E2E', () => {
           taskId: payload.taskId,
           events: payload.events ?? [],
         });
+        await new Promise(() => {});
       }),
     };
 
-    const plannerTrigger = new PlannerTrigger(mockPlannerApi as any, {
+    const plannerTrigger = new PlannerTrigger(mockPlannerApi as any, recorder, {
       agentId: 'pimclaw-planner',
       timeoutSeconds: 600,
       workspaceDir: '/tmp/pimclaw-planner-workspace',

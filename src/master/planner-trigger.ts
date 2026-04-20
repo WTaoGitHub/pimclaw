@@ -5,6 +5,8 @@
 
 import type { ValidatedEvent } from './anomaly-receiver.js';
 import type { ComponentRegistry } from './component-registry.js';
+import { TaskStatusRecorder } from './task-status-recorder.js';
+import type { TaskStatus } from '../types/index.js';
 import type { PluginLogger } from 'openclaw/plugin-sdk/plugin-entry';
 
 export interface OpenClawAgentApi {
@@ -36,14 +38,16 @@ const DEFAULT_CONFIG: PlannerTriggerConfig = {
 };
 
 export class PlannerTrigger {
+  private readonly taskRecorder: TaskStatusRecorder;
   private openclawApi: OpenClawAgentApi;
   private config: PlannerTriggerConfig;
   private readonly registry: ComponentRegistry | null;
   private readonly logger: PluginLogger | null;
   private readonly agentId = 'planner-trigger';
 
-  constructor(openclawApi: OpenClawAgentApi, config?: Partial<PlannerTriggerConfig>, registry?: ComponentRegistry, logger?: PluginLogger) {
+  constructor(openclawApi: OpenClawAgentApi, taskRecorder: TaskStatusRecorder, config?: Partial<PlannerTriggerConfig>, registry?: ComponentRegistry, logger?: PluginLogger) {
     this.openclawApi = openclawApi;
+    this.taskRecorder = taskRecorder;
     this.config = { ...DEFAULT_CONFIG, ...config };
     this.registry = registry ?? null;
     this.logger = logger ?? null;
@@ -72,6 +76,28 @@ export class PlannerTrigger {
     if (!this.logger) console.debug(`[PlannerTrigger] ${message}`);
   }
 
+  private readonly successfulTaskStatuses = new Set<TaskStatus>([
+    'ready',
+    'scheduling',
+    'scheduled',
+    'running',
+    'done',
+  ]);
+
+  private formatPlannerTriggerFailure(error: unknown): string {
+    const message = error instanceof Error ? error.message : String(error);
+    return `Planner trigger failed before plan submission: ${message}`;
+  }
+
+  private async persistPlannerTriggerFailure(taskId: string, error: unknown): Promise<string> {
+    const message = this.formatPlannerTriggerFailure(error);
+    const task = this.taskRecorder.getTask(taskId);
+    if (task?.status === 'planning') {
+      await this.taskRecorder.recordPlannerTriggerFailure(taskId, message);
+    }
+    return message;
+  }
+
   async trigger(events: ValidatedEvent[], taskId: string): Promise<void> {
     this.debug('triggering planner', {
       taskId,
@@ -91,7 +117,13 @@ export class PlannerTrigger {
       timeoutSeconds: this.config.timeoutSeconds,
     });
 
-    await this.openclawApi.triggerAgent(this.config.agentId, {
+    const planningResolvedPromise = this.taskRecorder.waitForTaskStatus(
+      taskId,
+      (event) => this.successfulTaskStatuses.has(event.currentStatus),
+      this.config.timeoutSeconds * 1000,
+    );
+
+    const runtimePromise = this.openclawApi.triggerAgent(this.config.agentId, {
       task: [
         `Plan optimal config for the LLM deployment "${payload.deploymentName}" to address the anomalies listed in the JSON payload below.`,
         `Review ALL ${events.length} anomaly event(s) for this deployment, decide which one(s) to handle (you may ignore lower-priority ones), and submit a SINGLE plan via pimclaw_plan_task using taskId "${taskId}".`,
@@ -107,6 +139,59 @@ export class PlannerTrigger {
       }],
     });
 
-    this.debug('planner trigger completed', { taskId });
+    await new Promise<void>((resolve, reject) => {
+      let settled = false;
+
+      const resolveSuccess = (currentStatus: TaskStatus): void => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        this.debug('planner trigger completed', { taskId, currentStatus });
+        resolve();
+      };
+
+      const rejectFailure = async (error: unknown): Promise<void> => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        const message = await this.persistPlannerTriggerFailure(taskId, error);
+        reject(new Error(message));
+      };
+
+      planningResolvedPromise
+        .then((event) => {
+          resolveSuccess(event.currentStatus);
+        })
+        .catch((error) => {
+          void rejectFailure(error);
+        });
+
+      runtimePromise
+        .then(() => {
+          const currentStatus = this.taskRecorder.getTask(taskId)?.status;
+          if (currentStatus && this.successfulTaskStatuses.has(currentStatus)) {
+            resolveSuccess(currentStatus);
+            return;
+          }
+          void rejectFailure(
+            new Error(`Planner runtime completed before task ${taskId} left planning`),
+          );
+        })
+        .catch((error) => {
+          const currentStatus = this.taskRecorder.getTask(taskId)?.status;
+          if (currentStatus && this.successfulTaskStatuses.has(currentStatus)) {
+            this.debug('planner runtime failed after plan submission', {
+              taskId,
+              currentStatus,
+              error: error instanceof Error ? error.message : String(error),
+            });
+            resolveSuccess(currentStatus);
+            return;
+          }
+          void rejectFailure(error);
+        });
+    });
   }
 }

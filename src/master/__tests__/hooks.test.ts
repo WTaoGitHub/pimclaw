@@ -23,9 +23,11 @@ describe('AnomalyReceiver hooks governance', () => {
     taskRecorder = new TaskStatusRecorder(tmpDir);
     await taskRecorder.initialize();
 
-    triggerSpy = vi.fn().mockResolvedValue(undefined);
+    triggerSpy = vi.fn().mockImplementation(async () => {
+      await new Promise(() => {});
+    });
     const mockApi = { triggerAgent: triggerSpy };
-    plannerTrigger = new PlannerTrigger(mockApi);
+    plannerTrigger = new PlannerTrigger(mockApi, taskRecorder);
   });
 
   function makeEvent(overrides: Partial<AnomalyEvent> = {}): AnomalyEvent {

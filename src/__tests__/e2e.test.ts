@@ -26,10 +26,11 @@ describe('PimClaw v2 integration', () => {
       triggerAgent: async (_agentId: string, options: any) => {
         const payload = JSON.parse(options.attachments?.[0]?.content ?? '{}');
         triggerCalls.push({ taskId: payload.taskId });
+        await new Promise(() => {});
       },
     };
 
-    const plannerTrigger = new PlannerTrigger(plannerApi as any, {
+    const plannerTrigger = new PlannerTrigger(plannerApi as any, recorder, {
       agentId: 'pimclaw-planner',
       timeoutSeconds: 600,
       workspaceDir: '/tmp/pimclaw-planner-workspace',
@@ -82,10 +83,11 @@ describe('PimClaw v2 integration', () => {
           deploymentName: payload.deploymentName,
           eventCount: (payload.events as unknown[]).length,
         });
+        await new Promise(() => {});
       },
     };
 
-    const plannerTrigger = new PlannerTrigger(plannerApi as any, {
+    const plannerTrigger = new PlannerTrigger(plannerApi as any, recorder, {
       agentId: 'pimclaw-planner',
       timeoutSeconds: 600,
       workspaceDir: '/tmp/pimclaw-planner-workspace',
