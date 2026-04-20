@@ -31,6 +31,7 @@ import { AnomalyReceiver } from './master/anomaly-receiver.js';
 import type { AnomalyEvent } from './master/anomaly-receiver.js';
 import { PlannerTrigger } from './master/planner-trigger.js';
 import type { OpenClawAgentApi } from './master/planner-trigger.js';
+import { FileLogger } from './master/file-logger.js';
 import {
   PrometheusClient,
   injectLabels,
@@ -152,6 +153,7 @@ let plannerFallbackTaskType: 'scale-up' | 'scale-down' | 'restart' | 'reconfigur
 let plannerFallbackConfig: Record<string, unknown> = { replicaDelta: 1 };
 let planningTimeoutMs = 600_000;
 let pluginLogger: OpenClawPluginServiceContext['logger'] | null = null;
+let fileLogger: FileLogger | null = null;
 const planningFallbackTimers: Map<string, ReturnType<typeof setTimeout>> = new Map();
 const currentHeadRunIds: Map<string, string> = new Map();
 const toolHooks: ToolHook[] = [];
@@ -502,7 +504,13 @@ function createPimClawService(): OpenClawPluginService {
 
     async start(ctx: OpenClawPluginServiceContext) {
       ctx.logger.info('[PimClaw] Starting components…');
-      pluginLogger = ctx.logger;
+
+      // File-based rotating logger (wraps ctx.logger so lines go to both)
+      const logDir = path.join(ctx.workspaceDir, '.openclaw', 'logs');
+      fileLogger = new FileLogger({ logDir, maxFiles: 10, maxFileSizeBytes: 5 * 1024 * 1024 }, ctx.logger);
+      await fileLogger.initialize();
+      pluginLogger = fileLogger;
+
       const config = getPluginConfig(ctx);
 
       // 1. Shared infrastructure
@@ -510,7 +518,7 @@ function createPimClawService(): OpenClawPluginService {
       taskRecorder = new TaskStatusRecorder(
         `${ctx.stateDir}/pimclaw-tasks`,
         registry,
-        ctx.logger,
+        fileLogger,
       );
       await taskRecorder.initialize();
 
@@ -533,7 +541,7 @@ function createPimClawService(): OpenClawPluginService {
         agentId: plannerConfig.agentId ?? 'pimclaw-planner',
         timeoutSeconds: plannerConfig.timeoutSeconds ?? 600,
         workspaceDir: plannerWorkspaceDir,
-      }, registry, ctx.logger);
+      }, registry, fileLogger);
 
       ctx.logger.info(
         `[PimClaw] Dedicated agent workspaces ready: head=${headWorkspaceDir}, planner=${plannerWorkspaceDir}`,
@@ -556,11 +564,11 @@ function createPimClawService(): OpenClawPluginService {
           },
         },
         registry,
-        ctx.logger,
+        fileLogger,
       );
 
       // 4. Scheduler — polls for ready tasks, spawns Workers
-      scheduler = new SchedulerAgent(registry, taskRecorder, undefined, taskExecutor ?? undefined, ctx.logger);
+      scheduler = new SchedulerAgent(registry, taskRecorder, undefined, taskExecutor ?? undefined, fileLogger);
       await scheduler.initialize();
       scheduler.run().catch((err) =>
         ctx.logger.error(`[PimClaw] Scheduler error: ${err}`),
@@ -708,6 +716,10 @@ function createPimClawService(): OpenClawPluginService {
       activeEngines = [...ALL_ENGINES];
       pluginConfig = {};
       pluginRuntime = null;
+      if (fileLogger) {
+        await fileLogger.close();
+        fileLogger = null;
+      }
       pluginLogger = null;
       toolHooks.length = 0;
 
