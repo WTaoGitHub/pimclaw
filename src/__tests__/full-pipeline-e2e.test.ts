@@ -155,7 +155,7 @@ describe('PimClaw v2 full pipeline E2E', () => {
     const plannerTriggerCalls: Array<{
       agentId: string;
       taskId: string;
-      event: AnomalyEvent;
+      events: AnomalyEvent[];
     }> = [];
 
     const mockPlannerApi = {
@@ -164,7 +164,7 @@ describe('PimClaw v2 full pipeline E2E', () => {
         plannerTriggerCalls.push({
           agentId: _agentId,
           taskId: payload.taskId,
-          event: payload.event,
+          events: payload.events ?? [],
         });
       }),
     };

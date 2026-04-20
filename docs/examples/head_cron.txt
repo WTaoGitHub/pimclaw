@@ -20,7 +20,6 @@ openclaw cron add \
   --thinking off \
   --timeout-seconds 300 \
   --light-context \
-  --no-deliver \
   --system-event "Hey, Pimclaw-head, get to work!"
 
 

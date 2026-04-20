@@ -329,6 +329,30 @@ function getPluginConfig(ctx?: OpenClawPluginServiceContext): Record<string, unk
   };
 }
 
+/**
+ * Extract all top-level JSON object strings from text using brace-depth tracking.
+ * Handles the case where an LLM returns multiple {...} blocks separated by prose.
+ */
+function extractJsonObjects(text: string): string[] {
+  const objects: string[] = [];
+  let depth = 0;
+  let start = -1;
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (ch === '{') {
+      if (depth === 0) start = i;
+      depth++;
+    } else if (ch === '}') {
+      depth--;
+      if (depth === 0 && start !== -1) {
+        objects.push(text.slice(start, i + 1));
+        start = -1;
+      }
+    }
+  }
+  return objects;
+}
+
 interface PlannerSubmission {
   taskId: string;
   taskType: string;
@@ -445,8 +469,50 @@ function createCliPlannerAgentApi(ctx: OpenClawPluginServiceContext): OpenClawAg
       let submission: PlannerSubmission;
       try {
         submission = JSON.parse(plannerText);
-      } catch (error) {
-        throw new Error(`planner CLI did not return valid JSON: ${error instanceof Error ? error.message : String(error)}`);
+      } catch {
+        // LLM may have added preamble prose, markdown fences, or returned multiple
+        // JSON objects (one per anomaly). Use a brace-depth extractor to find all
+        // top-level {...} blocks, then pick the one whose taskId matches.
+        const candidates = extractJsonObjects(plannerText);
+        if (candidates.length === 0) {
+          throw new Error(
+            `planner CLI returned no JSON object | raw: ${plannerText.slice(0, 300)}`,
+          );
+        }
+        // Prefer the candidate whose taskId matches the one in the task payload.
+        // The payload is embedded as JSON inside options.task — extract it.
+        let expectedTaskId: string | undefined;
+        try {
+          // taskId is a top-level field in the payload object
+          const bare = options.task.match(/"taskId"\s*:\s*"([^"]+)"/);
+          expectedTaskId = bare?.[1];
+        } catch { /* ignore */ }
+
+        let matched: PlannerSubmission | undefined;
+        const parseErrors: string[] = [];
+        for (const candidate of candidates) {
+          try {
+            const parsed = JSON.parse(candidate) as PlannerSubmission;
+            if (!matched) matched = parsed; // first valid candidate as fallback
+            if (expectedTaskId && parsed.taskId === expectedTaskId) {
+              matched = parsed;
+              break;
+            }
+          } catch (e) {
+            parseErrors.push(e instanceof Error ? e.message : String(e));
+          }
+        }
+        if (!matched) {
+          throw new Error(
+            `planner CLI did not return valid JSON (tried ${candidates.length} candidates): ${parseErrors.join('; ')} | raw: ${plannerText.slice(0, 300)}`,
+          );
+        }
+        pluginLogger?.debug(`[PlanTask] extracted JSON from multi-object response`, {
+          candidateCount: candidates.length,
+          expectedTaskId,
+          matchedTaskId: matched.taskId,
+        });
+        submission = matched;
       }
 
       const applied = await applyPlannerSubmission(submission);
@@ -573,7 +639,7 @@ function createPimClawService(): OpenClawPluginService {
           onPlanningTaskCreated: async (taskId) => {
             schedulePlanningFallback(taskId);
           },
-          onPlannerTriggerFailed: async (taskId, _event, error) => {
+          onPlannerTriggerFailed: async (taskId, _events, error) => {
             const message = error instanceof Error ? error.message : String(error);
             await applyFallbackPlan(taskId, `planner trigger failed: ${message}`);
           },
@@ -1242,13 +1308,6 @@ function buildPimClawTools() {
       },
     },
     async execute(_sessionId: string, params: Record<string, unknown>) {
-      if (!perfMcpClient) {
-        return {
-          output: JSON.stringify({
-            error: 'Perf MCP not configured. Set perfMcp.serverScriptPath in plugin config.',
-          }),
-        };
-      }
       pluginLogger?.debug(`[Planner:PerfQuery] historical perf query started`, {
         model_name: params.model_name,
         engine_name: params.engine_name,
@@ -1258,6 +1317,14 @@ function buildPimClawTools() {
         device_per_node: params.device_per_node,
         limit: params.limit,
       });
+      if (!perfMcpClient) {
+        pluginLogger?.debug(`[Planner:PerfQuery] perf MCP not configured, returning error`);
+        return {
+          output: JSON.stringify({
+            error: 'Perf MCP not configured. Set perfMcp.serverScriptPath in plugin config.',
+          }),
+        };
+      }
       try {
         const result = await perfMcpClient.queryPerfllm(params);
         const rowCount = Array.isArray(result) ? result.length : (result as any)?.rows?.length ?? '?';
@@ -1281,14 +1348,15 @@ function buildPimClawTools() {
       'types, and nullability. Use this to understand what data is available before querying.',
     parameters: { type: 'object' as const, properties: {} },
     async execute() {
+      pluginLogger?.debug(`[Planner:PerfQuery] fetching perfllm schema`);
       if (!perfMcpClient) {
+        pluginLogger?.debug(`[Planner:PerfQuery] perf MCP not configured, returning error`);
         return {
           output: JSON.stringify({
             error: 'Perf MCP not configured. Set perfMcp.serverScriptPath in plugin config.',
           }),
         };
       }
-      pluginLogger?.debug(`[Planner:PerfQuery] fetching perfllm schema`);
       try {
         const result = await perfMcpClient.getSchema();
         pluginLogger?.debug(`[Planner:PerfQuery] perfllm schema fetched`);
@@ -1318,13 +1386,6 @@ function buildPimClawTools() {
       description,
       parameters,
       async execute(_sessionId: string, params: Record<string, unknown>) {
-        if (!simMcpClient) {
-          return {
-            output: JSON.stringify({
-              error: 'Sim MCP not configured. Set simMcp.sseUrl in plugin config.',
-            }),
-          };
-        }
         pluginLogger?.debug(`[Planner:Sim] ${name} called`, {
           hisimTool: hisimToolName,
           model: (params.model_path ?? params.model) as string | undefined,
@@ -1334,6 +1395,14 @@ function buildPimClawTools() {
           datasetName: params.dataset_name,
           requestRate: params.request_rate,
         });
+        if (!simMcpClient) {
+          pluginLogger?.debug(`[Planner:Sim] sim MCP not configured, returning error`, { hisimTool: hisimToolName });
+          return {
+            output: JSON.stringify({
+              error: 'Sim MCP not configured. Set simMcp.sseUrl in plugin config.',
+            }),
+          };
+        }
         try {
           const result = await simMcpClient.callTool(hisimToolName, params);
           pluginLogger?.debug(`[Planner:Sim] ${name} returned`, { hisimTool: hisimToolName });

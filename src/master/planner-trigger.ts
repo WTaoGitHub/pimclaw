@@ -25,7 +25,8 @@ export interface PlannerTriggerConfig {
 }
 
 export interface PlannerTriggerPayload {
-  event: ValidatedEvent;
+  events: ValidatedEvent[];
+  deploymentName: string;
   taskId: string;
 }
 
@@ -71,16 +72,20 @@ export class PlannerTrigger {
     if (!this.logger) console.debug(`[PlannerTrigger] ${message}`);
   }
 
-  async trigger(event: ValidatedEvent, taskId: string): Promise<void> {
+  async trigger(events: ValidatedEvent[], taskId: string): Promise<void> {
     this.debug('triggering planner', {
       taskId,
-      eventType: event.type,
-      severity: event.severity,
-      deploymentName: event.deploymentName,
-      metricName: event.metricName,
+      deploymentName: events[0]?.deploymentName,
+      eventCount: events.length,
+      metrics: events.map((e) => e.metricName),
+      severities: events.map((e) => e.severity),
     });
 
-    const payload: PlannerTriggerPayload = { event, taskId };
+    const payload: PlannerTriggerPayload = {
+      events,
+      deploymentName: events[0]?.deploymentName ?? 'unknown',
+      taskId,
+    };
     this.debug('calling OpenClaw agent API', {
       agentId: this.config.agentId,
       timeoutSeconds: this.config.timeoutSeconds,
@@ -88,8 +93,8 @@ export class PlannerTrigger {
 
     await this.openclawApi.triggerAgent(this.config.agentId, {
       task: [
-        'Plan optimal config for the anomaly described in the JSON payload below.',
-        'Use the payload values as the authoritative input.',
+        `Plan optimal config for the LLM deployment "${payload.deploymentName}" to address the anomalies listed in the JSON payload below.`,
+        `Review ALL ${events.length} anomaly event(s) for this deployment, decide which one(s) to handle (you may ignore lower-priority ones), and submit a SINGLE plan via pimclaw_plan_task using taskId "${taskId}".`,
         JSON.stringify(payload),
       ].join('\n\n'),
       mode: 'run',

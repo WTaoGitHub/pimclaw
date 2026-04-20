@@ -1,10 +1,14 @@
 /**
  * AnomalyReceiver — validates events from the LLM Head Agent
- * and triggers the Planner for each validated event.
+ * and triggers the Planner once per affected deployment.
+ *
+ * All anomaly events for the same deployment are grouped into a single
+ * planning task and a single Planner invocation. The Planner then decides
+ * which anomaly to address and ignores the others for that deployment.
  *
  * Hooks are non-fatal: if a hook throws, the error is logged and
  * processing continues. Hooks can return { preventContinuation: true }
- * to skip the Planner trigger for a given event.
+ * to skip the Planner trigger for a given deployment group.
  */
 
 import { TaskStatusRecorder } from './task-status-recorder.js';
@@ -43,8 +47,8 @@ export interface HookResult {
 }
 
 export interface AnomalyReceiverHooks {
-  onPlanningTaskCreated?: (taskId: string, event: ValidatedEvent) => HookResult | void | Promise<HookResult | void>;
-  onPlannerTriggerFailed?: (taskId: string, event: ValidatedEvent, error: unknown) => void | Promise<void>;
+  onPlanningTaskCreated?: (taskId: string, events: ValidatedEvent[]) => HookResult | void | Promise<HookResult | void>;
+  onPlannerTriggerFailed?: (taskId: string, events: ValidatedEvent[], error: unknown) => void | Promise<void>;
 }
 
 const DEFAULT_CONFIG: AnomalyReceiverConfig = {
@@ -118,7 +122,15 @@ export class AnomalyReceiver {
       );
     }
 
-    const validated: ValidatedEvent[] = [];
+    // ── Phase 1: validate and dedup each event individually ────────────────
+    interface PreValidated {
+      event: AnomalyEvent;
+      eventId: string;
+      receivedAt: Date;
+      dedupKey: string;
+    }
+
+    const preValidated: PreValidated[] = [];
 
     for (const event of events) {
       this.debug('processing event', {
@@ -135,7 +147,7 @@ export class AnomalyReceiver {
           deploymentName: event.deploymentName,
           reason: error,
         });
-        continue; // skip invalid events
+        continue;
       }
 
       const dedupKey = `${event.metricName}:${event.deploymentName}`;
@@ -145,106 +157,137 @@ export class AnomalyReceiver {
           metricName: event.metricName,
           deploymentName: event.deploymentName,
         });
-        continue; // skip duplicate events
+        continue;
       }
 
-      const taskId = uuidv4();
-      const validatedEvent: ValidatedEvent = {
-        ...event,
+      preValidated.push({
+        event,
         eventId: uuidv4(),
         receivedAt: new Date(),
-        taskId,
-      };
+        dedupKey,
+      });
+    }
 
-      // Create a preliminary task in 'planning' state
+    // ── Phase 2: group by deployment, one task + one Planner call per group ─
+    const byDeployment = new Map<string, PreValidated[]>();
+    for (const pv of preValidated) {
+      const group = byDeployment.get(pv.event.deploymentName) ?? [];
+      group.push(pv);
+      byDeployment.set(pv.event.deploymentName, group);
+    }
+
+    const allValidated: ValidatedEvent[] = [];
+
+    for (const [deploymentName, group] of byDeployment) {
+      const taskId = uuidv4();
+
+      // Mark all dedup keys so identical metrics aren't re-submitted this cycle
+      for (const pv of group) {
+        this.recentEvents.set(pv.dedupKey, new Date());
+      }
+
+      // Build the ValidatedEvent array — all events share the same taskId
+      const groupValidated: ValidatedEvent[] = group.map((pv) => ({
+        ...pv.event,
+        eventId: pv.eventId,
+        receivedAt: pv.receivedAt,
+        taskId,
+      }));
+
+      // Priority: high if any event is high, otherwise medium
+      const priority = group.some((pv) => pv.event.severity === 'high') ? 'high' : 'medium';
+
+      // Create ONE task for the entire deployment group
       const task: Task = {
         taskId,
         status: 'planning',
         createdAt: new Date(),
         statusModifiedAt: new Date(),
-        priority: event.severity === 'high' ? 'high' : 'medium',
-        llmDeploymentName: event.deploymentName,
-        taskType: 'pending-plan', // will be updated by Planner
+        priority,
+        llmDeploymentName: deploymentName,
+        taskType: 'pending-plan', // filled in by Planner
         taskData: {
-          eventId: validatedEvent.eventId,
-          eventType: event.type,
-          metric: event.metricName,
-          currentValue: event.currentValue,
-          previousValue: event.previousValue,
-          reasoning: event.reasoning,
+          events: groupValidated.map((e) => ({
+            eventId: e.eventId,
+            eventType: e.type,
+            metric: e.metricName,
+            currentValue: e.currentValue,
+            previousValue: e.previousValue,
+            reasoning: e.reasoning,
+          })),
         },
         retryCount: 0,
         maxRetries: 3,
       };
 
       await this.taskRecorder.createTask(task);
-      this.recentEvents.set(dedupKey, new Date());
-      this.debug('planning task created', {
+      this.debug('planning task created for deployment', {
         taskId,
-        eventId: validatedEvent.eventId,
-        dedupKey,
-        deploymentName: event.deploymentName,
-        metricName: event.metricName,
+        deploymentName,
+        eventCount: group.length,
+        eventIds: groupValidated.map((e) => e.eventId),
       });
 
-      // Run hook (non-fatal: errors are logged, not propagated)
+      // Run hook (non-fatal)
       let skipPlanner = false;
       const hookStart = Date.now();
       try {
-        const hookResult = await this.hooks.onPlanningTaskCreated?.(taskId, validatedEvent);
+        const hookResult = await this.hooks.onPlanningTaskCreated?.(taskId, groupValidated);
         if (hookResult?.preventContinuation) {
           skipPlanner = true;
-          this.debug('planner trigger skipped by onPlanningTaskCreated hook', {
-            taskId,
-            eventId: validatedEvent.eventId,
-          });
+          this.debug('planner trigger skipped by onPlanningTaskCreated hook', { taskId, deploymentName });
         }
       } catch (hookError) {
         this.error(`onPlanningTaskCreated hook error for task ${taskId}:`, hookError);
       }
-      validatedEvent.hookDurationMs = Date.now() - hookStart;
+
+      const hookDurationMs = Date.now() - hookStart;
+      for (const e of groupValidated) {
+        e.hookDurationMs = hookDurationMs;
+      }
+
       this.debug('planning hook completed', {
         taskId,
-        eventId: validatedEvent.eventId,
-        hookDurationMs: validatedEvent.hookDurationMs,
+        deploymentName,
+        hookDurationMs,
         skipPlanner,
       });
 
-      // Trigger the Planner agent asynchronously (unless hook prevented it)
+      // Trigger the Planner once for all anomalies of this deployment
       if (!skipPlanner) {
-        this.debug('triggering planner', {
+        this.debug('triggering planner for deployment', {
           taskId,
-          eventId: validatedEvent.eventId,
-          deploymentName: validatedEvent.deploymentName,
-          metricName: validatedEvent.metricName,
+          deploymentName,
+          eventCount: groupValidated.length,
         });
         this.plannerTrigger
-          .trigger(validatedEvent, taskId)
+          .trigger(groupValidated, taskId)
           .catch(async (error) => {
             this.debug('planner trigger failed', {
               taskId,
-              eventId: validatedEvent.eventId,
+              deploymentName,
               error: error instanceof Error ? error.message : String(error),
             });
             try {
-              await this.hooks.onPlannerTriggerFailed?.(taskId, validatedEvent, error);
+              await this.hooks.onPlannerTriggerFailed?.(taskId, groupValidated, error);
             } catch (hookError) {
               this.error(`onPlannerTriggerFailed hook error for task ${taskId}:`, hookError);
             }
           });
       }
 
-      validated.push(validatedEvent);
+      allValidated.push(...groupValidated);
     }
 
     this.cleanupStaleDedup();
     this.debug('receive completed', {
       submittedEvents: events.length,
-      acceptedEvents: validated.length,
+      acceptedEvents: allValidated.length,
+      deploymentGroups: byDeployment.size,
       dedupCacheSize: this.recentEvents.size,
     });
 
-    return validated;
+    return allValidated;
   }
 
   private validateEvent(event: AnomalyEvent): string | null {
