@@ -506,7 +506,7 @@ function createPimClawService(): OpenClawPluginService {
       ctx.logger.info('[PimClaw] Starting components…');
 
       // File-based rotating logger (wraps ctx.logger so lines go to both)
-      const logDir = path.join(ctx.workspaceDir, '.openclaw', 'logs');
+      const logDir = path.join(ctx.stateDir, 'logs');
       fileLogger = new FileLogger({ logDir, maxFiles: 10, maxFileSizeBytes: 5 * 1024 * 1024 }, ctx.logger);
       await fileLogger.initialize();
       pluginLogger = fileLogger;

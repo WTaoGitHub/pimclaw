@@ -144,7 +144,7 @@ export class SchedulerAgent extends BaseAgent {
       this.updateAction(`Scheduling task ${task.taskId}`);
 
       // Create and track a Worker Agent
-      const worker = new WorkerAgent(this.registry, this.taskRecorder, task, this.taskExecutor ?? undefined);
+      const worker = new WorkerAgent(this.registry, this.taskRecorder, task, this.taskExecutor ?? undefined, this.logger ?? undefined);
       this.workers.set(task.taskId, worker);
 
       // Initialize worker (registers in registry, attempts MCP connections)

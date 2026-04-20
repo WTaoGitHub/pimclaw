@@ -12,6 +12,7 @@ import { ComponentRegistry } from './component-registry.js';
 import { TaskStatusRecorder } from './task-status-recorder.js';
 import { TaskExecutor } from './task-executor.js';
 import { Task, AgentRuntimeStatus } from '../types/index.js';
+import type { PluginLogger } from 'openclaw/plugin-sdk/plugin-entry';
 
 /**
  * Worker Agent - Executes assigned tasks
@@ -22,12 +23,14 @@ export class WorkerAgent extends BaseAgent {
   private taskRecorder: TaskStatusRecorder;
   private taskExecutor: TaskExecutor | null;
   private executionTimeout: number = 30 * 60 * 1000; // 30 minutes
+  private readonly logger: PluginLogger | null;
 
   constructor(
     registry: ComponentRegistry,
     taskRecorder: TaskStatusRecorder,
     task: Task,
     taskExecutor?: TaskExecutor,
+    logger?: PluginLogger,
   ) {
     super('worker', registry, {
       agentId: `worker-${task.taskId}`,
@@ -36,6 +39,17 @@ export class WorkerAgent extends BaseAgent {
     this.task = task;
     this.taskRecorder = taskRecorder;
     this.taskExecutor = taskExecutor ?? null;
+    this.logger = logger ?? null;
+  }
+
+  private debug(message: string, context?: Record<string, unknown>): void {
+    if (context) {
+      this.logger?.debug(`[Worker] ${message}`, context);
+      if (!this.logger) console.debug(`[Worker] ${message}`, context);
+      return;
+    }
+    this.logger?.debug(`[Worker] ${message}`);
+    if (!this.logger) console.debug(`[Worker] ${message}`);
   }
 
   /**
@@ -43,6 +57,13 @@ export class WorkerAgent extends BaseAgent {
    */
   async run(): Promise<void> {
     this.updateAction(`Executing task ${this.task.taskId}`);
+    this.debug('starting', {
+      taskId: this.task.taskId,
+      taskType: this.task.taskType,
+      deploymentName: this.task.llmDeploymentName,
+      retryCount: this.task.retryCount,
+      maxRetries: this.task.maxRetries,
+    });
 
     let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
     try {
@@ -51,12 +72,15 @@ export class WorkerAgent extends BaseAgent {
         this.task.taskId,
         'running'
       );
+      this.debug('task marked running', { taskId: this.task.taskId });
 
       // Execute the task with timeout and abort support
       const result = await Promise.race([
         this.executeTask(),
         this.createAbortableTimeout(),
       ]);
+
+      this.debug('task execution succeeded', { taskId: this.task.taskId });
 
       // Mark task as completed
       await this.taskRecorder.updateTaskResult(
@@ -78,6 +102,7 @@ export class WorkerAgent extends BaseAgent {
 
       // Handle abort
       if (this.aborted) {
+        this.debug('task aborted', { taskId: this.task.taskId, error: errorMessage });
         await this.taskRecorder.updateTaskResult(
           this.task.taskId,
           null,
@@ -89,6 +114,7 @@ export class WorkerAgent extends BaseAgent {
         );
       } else if (errorMessage.includes('timeout')) {
         // Handle timeout
+        this.debug('task timed out', { taskId: this.task.taskId, timeoutMs: this.executionTimeout });
         await this.taskRecorder.updateTaskResult(
           this.task.taskId,
           null,
@@ -102,6 +128,7 @@ export class WorkerAgent extends BaseAgent {
         );
       } else {
         // Handle other errors
+        this.debug('task failed', { taskId: this.task.taskId, error: errorMessage });
         await this.taskRecorder.updateTaskResult(
           this.task.taskId,
           null,
@@ -114,6 +141,7 @@ export class WorkerAgent extends BaseAgent {
       // Handle retry logic (skip if aborted — don't retry aborted tasks)
       if (!this.aborted && this.task.retryCount < this.task.maxRetries) {
         // Reset task to ready for retry
+        this.debug('resetting task for retry', { taskId: this.task.taskId, retryCount: this.task.retryCount, maxRetries: this.task.maxRetries });
         await this.taskRecorder.resetTaskForRetry(this.task.taskId);
       }
 
@@ -127,6 +155,7 @@ export class WorkerAgent extends BaseAgent {
       this.updateAction('Task execution failed');
     } finally {
       // Always cleanup
+      this.debug('shutting down', { taskId: this.task.taskId });
       await this.shutdown();
     }
   }
@@ -138,6 +167,11 @@ export class WorkerAgent extends BaseAgent {
     this.updateAction(
       `Executing ${this.task.taskType} on ${this.task.llmDeploymentName}`
     );
+    this.debug('calling task executor', {
+      taskId: this.task.taskId,
+      taskType: this.task.taskType,
+      deploymentName: this.task.llmDeploymentName,
+    });
 
     if (!this.taskExecutor) {
       throw new Error('No TaskExecutor available — Engine MCP not configured');
@@ -145,6 +179,7 @@ export class WorkerAgent extends BaseAgent {
 
     try {
       const result = await this.taskExecutor.execute(this.task);
+      this.debug('task executor returned', { taskId: this.task.taskId });
       return result;
     } catch (error) {
       throw new Error(
