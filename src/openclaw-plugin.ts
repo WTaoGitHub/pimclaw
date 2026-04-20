@@ -357,6 +357,14 @@ async function applyPlannerSubmission(submission: PlannerSubmission): Promise<{ 
     return { error: `Task ${submission.taskId} is in '${task.status}' state, expected 'planning'` };
   }
 
+  pluginLogger?.debug(`[PlanTask] taskType decided by planner`, {
+    taskId: submission.taskId,
+    taskType: submission.taskType,
+    source: 'planner-agent',
+    hasPerfEvidence: !!submission.perfEvidence,
+    hasSimulationResults: !!submission.simulationResults,
+    reasoningSnippet: submission.reasoning?.slice(0, 120),
+  });
   task.taskType = submission.taskType;
   task.config = submission.config;
   task.reasoning = submission.reasoning;
@@ -467,6 +475,13 @@ async function applyFallbackPlan(taskId: string, reason: string): Promise<boolea
     return false;
   }
 
+  pluginLogger?.debug(`[PlanTask] taskType decided by fallback`, {
+    taskId,
+    taskType: plannerFallbackTaskType,
+    source: 'fallback',
+    reason,
+    fallbackConfig: plannerFallbackConfig,
+  });
   task.taskType = plannerFallbackTaskType;
   task.config = { ...plannerFallbackConfig };
   task.reasoning = `Fallback plan applied: ${reason}`;
@@ -1029,6 +1044,12 @@ function buildPimClawTools() {
       if (!taskRecorder) {
         return { output: JSON.stringify({ error: 'PimClaw service not running' }) };
       }
+      pluginLogger?.debug(`[RouteTask] taskType decided by caller`, {
+        taskType: params.taskType,
+        source: 'pimclaw_route_task',
+        deploymentName: params.llmDeploymentName,
+        priority: params.priority ?? 'medium',
+      });
       const task: Task = {
         taskId: uuidv4(),
         status: 'ready',
@@ -1228,10 +1249,22 @@ function buildPimClawTools() {
           }),
         };
       }
+      pluginLogger?.debug(`[Planner:PerfQuery] historical perf query started`, {
+        model_name: params.model_name,
+        engine_name: params.engine_name,
+        device_type: params.device_type,
+        scenario: params.scenario,
+        node_num: params.node_num,
+        device_per_node: params.device_per_node,
+        limit: params.limit,
+      });
       try {
         const result = await perfMcpClient.queryPerfllm(params);
+        const rowCount = Array.isArray(result) ? result.length : (result as any)?.rows?.length ?? '?';
+        pluginLogger?.debug(`[Planner:PerfQuery] historical perf query returned`, { rowCount });
         return { output: JSON.stringify(result) };
       } catch (err) {
+        pluginLogger?.debug(`[Planner:PerfQuery] historical perf query failed`, { error: err instanceof Error ? err.message : String(err) });
         return {
           output: JSON.stringify({
             error: err instanceof Error ? err.message : String(err),
@@ -1255,10 +1288,13 @@ function buildPimClawTools() {
           }),
         };
       }
+      pluginLogger?.debug(`[Planner:PerfQuery] fetching perfllm schema`);
       try {
         const result = await perfMcpClient.getSchema();
+        pluginLogger?.debug(`[Planner:PerfQuery] perfllm schema fetched`);
         return { output: JSON.stringify(result) };
       } catch (err) {
+        pluginLogger?.debug(`[Planner:PerfQuery] perfllm schema fetch failed`, { error: err instanceof Error ? err.message : String(err) });
         return {
           output: JSON.stringify({
             error: err instanceof Error ? err.message : String(err),
@@ -1289,10 +1325,21 @@ function buildPimClawTools() {
             }),
           };
         }
+        pluginLogger?.debug(`[Planner:Sim] ${name} called`, {
+          hisimTool: hisimToolName,
+          model: (params.model_path ?? params.model) as string | undefined,
+          hardware: params.hardware_name as string | undefined,
+          tpSize: params.tp_size,
+          dataType: params.data_type,
+          datasetName: params.dataset_name,
+          requestRate: params.request_rate,
+        });
         try {
           const result = await simMcpClient.callTool(hisimToolName, params);
+          pluginLogger?.debug(`[Planner:Sim] ${name} returned`, { hisimTool: hisimToolName });
           return { output: JSON.stringify(result) };
         } catch (err) {
+          pluginLogger?.debug(`[Planner:Sim] ${name} failed`, { hisimTool: hisimToolName, error: err instanceof Error ? err.message : String(err) });
           return {
             output: JSON.stringify({
               error: err instanceof Error ? err.message : String(err),
