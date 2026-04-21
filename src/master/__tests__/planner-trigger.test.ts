@@ -6,6 +6,7 @@ import { v4 as uuidv4 } from 'uuid';
 
 import { TaskStatusRecorder } from '../task-status-recorder.js';
 import { PlannerTrigger } from '../planner-trigger.js';
+import { ComponentRegistry } from '../component-registry.js';
 
 function createPlanningTask(taskId: string) {
   return {
@@ -106,6 +107,74 @@ describe('PlannerTrigger completion semantics', () => {
     expect(task.status).toBe('planning');
     expect(task.plannerTriggerError).toContain('no resource available for creating planner');
     expect(task.plannerTriggerErrorAt).toBeDefined();
+
+    await fs.rm(tmpDir, { recursive: true, force: true });
+  });
+
+  it('updates registry counters for successful and failed planner triggers', async () => {
+    const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'pimclaw-planner-trigger-'));
+    const recorder = new TaskStatusRecorder(tmpDir);
+    await recorder.initialize();
+
+    const registry = new ComponentRegistry();
+    let releaseRuntime: (() => void) | undefined;
+    const triggerAgent = vi.fn(async () => {
+      if (releaseRuntime) {
+        throw new Error('planner offline');
+      }
+
+      await new Promise<void>((resolve) => {
+        releaseRuntime = resolve;
+      });
+    });
+    const trigger = new PlannerTrigger({
+      triggerAgent,
+    }, recorder, { timeoutSeconds: 1 }, registry);
+
+    const successTaskId = uuidv4();
+    await recorder.createTask(createPlanningTask(successTaskId));
+
+    const successPromise = trigger.trigger([
+      {
+        type: 'spike',
+        metricName: 'tpot',
+        currentValue: 0.19,
+        previousValue: 0.099,
+        severity: 'medium',
+        deploymentName: 'minimax-m25-tp8ep',
+        taskId: successTaskId,
+        eventId: uuidv4(),
+        receivedAt: new Date(),
+      },
+    ], successTaskId);
+
+    await recorder.updateTaskStatus(successTaskId, 'ready');
+    releaseRuntime?.();
+    await successPromise;
+
+    const failureTaskId = uuidv4();
+    await recorder.createTask(createPlanningTask(failureTaskId));
+
+    await expect(trigger.trigger([
+      {
+        type: 'spike',
+        metricName: 'tpot',
+        currentValue: 0.19,
+        previousValue: 0.099,
+        severity: 'medium',
+        deploymentName: 'minimax-m25-tp8ep',
+        taskId: failureTaskId,
+        eventId: uuidv4(),
+        receivedAt: new Date(),
+      },
+    ], failureTaskId)).rejects.toThrow(/Planner trigger failed before plan submission/);
+
+    const status = registry.getAgentStatus('planner-trigger');
+    expect(triggerAgent).toHaveBeenCalledTimes(2);
+    expect(status?.counters.triggersAttempted).toBe(2);
+    expect(status?.counters.triggersSucceeded).toBe(1);
+    expect(status?.counters.triggersFailed).toBe(1);
+    expect(status?.errors.lastError).toContain('planner offline');
 
     await fs.rm(tmpDir, { recursive: true, force: true });
   });

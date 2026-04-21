@@ -6,10 +6,16 @@
 import type { ValidatedEvent } from './anomaly-receiver.js';
 import type { ComponentRegistry } from './component-registry.js';
 import { TaskStatusRecorder } from './task-status-recorder.js';
-import type { TaskStatus } from '../types/index.js';
+import type { AgentCounters, TaskStatus } from '../types/index.js';
 import type { PluginLogger } from 'openclaw/plugin-sdk/plugin-entry';
 
 export interface OpenClawAgentApi {
+  /**
+   * Launch a single planner run with isolated execution semantics.
+   * Concurrent calls must not share planner conversation state.
+   * `mode: 'run'` requests one-shot execution, and `cleanup: 'delete'`
+   * means the planner session should not be retained after completion.
+   */
   triggerAgent(agentId: string, options: {
     task: string;
     mode: string;
@@ -84,6 +90,36 @@ export class PlannerTrigger {
     'done',
   ]);
 
+  private updateCounters(counters: Partial<AgentCounters>): void {
+    const currentCounters = this.registry?.getAgentStatus(this.agentId)?.counters;
+    if (!currentCounters) {
+      return;
+    }
+
+    const nextCounters: Partial<AgentCounters> = {};
+
+    if (typeof counters.triggersAttempted === 'number') {
+      nextCounters.triggersAttempted =
+        (currentCounters.triggersAttempted ?? 0) + counters.triggersAttempted;
+    }
+
+    if (typeof counters.triggersSucceeded === 'number') {
+      nextCounters.triggersSucceeded =
+        (currentCounters.triggersSucceeded ?? 0) + counters.triggersSucceeded;
+    }
+
+    if (typeof counters.triggersFailed === 'number') {
+      nextCounters.triggersFailed =
+        (currentCounters.triggersFailed ?? 0) + counters.triggersFailed;
+    }
+
+    this.registry?.updateCounters(this.agentId, nextCounters);
+  }
+
+  private recordError(error: string): void {
+    this.registry?.recordError(this.agentId, error);
+  }
+
   private formatPlannerTriggerFailure(error: unknown): string {
     const message = error instanceof Error ? error.message : String(error);
     return `Planner trigger failed before plan submission: ${message}`;
@@ -99,6 +135,8 @@ export class PlannerTrigger {
   }
 
   async trigger(events: ValidatedEvent[], taskId: string): Promise<void> {
+    this.updateCounters({ triggersAttempted: 1 });
+    this.registry?.updateAgentAction(this.agentId, 'triggering planner');
     this.debug('triggering planner', {
       taskId,
       deploymentName: events[0]?.deploymentName,
@@ -112,6 +150,10 @@ export class PlannerTrigger {
       deploymentName: events[0]?.deploymentName ?? 'unknown',
       taskId,
     };
+    this.debug('planner runtime launch requested', {
+      taskId,
+      deploymentName: payload.deploymentName,
+    });
     this.debug('calling OpenClaw agent API', {
       agentId: this.config.agentId,
       timeoutSeconds: this.config.timeoutSeconds,
@@ -142,12 +184,14 @@ export class PlannerTrigger {
     await new Promise<void>((resolve, reject) => {
       let settled = false;
 
-      const resolveSuccess = (currentStatus: TaskStatus): void => {
+      const resolveSuccess = (currentStatus: TaskStatus, outcome: string): void => {
         if (settled) {
           return;
         }
         settled = true;
-        this.debug('planner trigger completed', { taskId, currentStatus });
+        this.updateCounters({ triggersSucceeded: 1 });
+        this.registry?.updateAgentAction(this.agentId, undefined);
+        this.debug('planner trigger completed', { taskId, currentStatus, outcome });
         resolve();
       };
 
@@ -157,12 +201,24 @@ export class PlannerTrigger {
         }
         settled = true;
         const message = await this.persistPlannerTriggerFailure(taskId, error);
+        this.updateCounters({ triggersFailed: 1 });
+        this.recordError(message);
+        this.registry?.updateAgentAction(this.agentId, undefined);
+        this.debug('planner trigger failed', {
+          taskId,
+          error: message,
+        });
         reject(new Error(message));
       };
 
       planningResolvedPromise
         .then((event) => {
-          resolveSuccess(event.currentStatus);
+          this.debug('planner task left planning', {
+            taskId,
+            previousStatus: event.previousStatus,
+            currentStatus: event.currentStatus,
+          });
+          resolveSuccess(event.currentStatus, 'task status updated');
         })
         .catch((error) => {
           void rejectFailure(error);
@@ -172,7 +228,7 @@ export class PlannerTrigger {
         .then(() => {
           const currentStatus = this.taskRecorder.getTask(taskId)?.status;
           if (currentStatus && this.successfulTaskStatuses.has(currentStatus)) {
-            resolveSuccess(currentStatus);
+            resolveSuccess(currentStatus, 'runtime completed after task advanced');
             return;
           }
           void rejectFailure(
@@ -187,7 +243,7 @@ export class PlannerTrigger {
               currentStatus,
               error: error instanceof Error ? error.message : String(error),
             });
-            resolveSuccess(currentStatus);
+            resolveSuccess(currentStatus, 'task already advanced before runtime failure');
             return;
           }
           void rejectFailure(error);

@@ -58,6 +58,7 @@ import type { SimMcpConfig } from './master/sim-mcp-client.js';
 import { TaskExecutor } from './master/task-executor.js';
 import type { Task } from './types/index.js';
 import { v4 as uuidv4 } from 'uuid';
+import { selectPlannerAgentApi } from './master/planner-launch.js';
 
 // ─── Tool hook governance ──────────────────────────────────────────────────
 
@@ -445,6 +446,9 @@ function createCliPlannerAgentApi(ctx: OpenClawPluginServiceContext): OpenClawAg
         [
           'agent',
           '--agent', agentId,
+          // The CLI shim has to force per-run isolation itself because it is
+          // emulating the one-shot planner semantics the injected API provides.
+          '--session-id', uuidv4(),
           '--message', plannerInstruction,
           '--timeout', String(options.runTimeoutSeconds),
           '--json',
@@ -626,11 +630,16 @@ function createPimClawService(): OpenClawPluginService {
       // 2. PlannerTrigger — spawns Planner agent via OpenClaw API
       plannerFallbackTaskType = plannerConfig.fallbackTaskType ?? 'scale-up';
       plannerFallbackConfig = plannerConfig.fallbackConfig ?? { replicaDelta: 1 };
-      const openclawApi = (ctx as any).openclawApi ?? createCliPlannerAgentApi(ctx);
-      if (!(ctx as any).openclawApi) {
+      const plannerAgentApi = selectPlannerAgentApi(
+        (ctx as any).openclawApi,
+        () => createCliPlannerAgentApi(ctx),
+      );
+      if (plannerAgentApi.mode === 'cli-fallback') {
         ctx.logger.info('[PimClaw] Using CLI-based planner trigger fallback');
+      } else {
+        ctx.logger.info('[PimClaw] Using injected OpenClaw agent API for planner trigger');
       }
-      const plannerTrigger = new PlannerTrigger(openclawApi, taskRecorder, {
+      const plannerTrigger = new PlannerTrigger(plannerAgentApi.api, taskRecorder, {
         agentId: plannerConfig.agentId ?? 'pimclaw-planner',
         timeoutSeconds: plannerConfig.timeoutSeconds ?? 600,
         workspaceDir: plannerWorkspaceDir,
