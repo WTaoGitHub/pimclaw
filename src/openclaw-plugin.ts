@@ -56,6 +56,7 @@ import type { PerfMcpConfig } from './master/perf-mcp-client.js';
 import { SimMcpClient } from './master/sim-mcp-client.js';
 import type { SimMcpConfig } from './master/sim-mcp-client.js';
 import { TaskExecutor } from './master/task-executor.js';
+import { PlannerMemoryStore } from './master/planner-memory-store.js';
 import type { Task } from './types/index.js';
 import { v4 as uuidv4 } from 'uuid';
 import { selectPlannerAgentApi } from './master/planner-launch.js';
@@ -143,6 +144,7 @@ let engineMcpClient: EngineMcpClient | null = null;
 let perfMcpClient: PerfMcpClient | null = null;
 let simMcpClient: SimMcpClient | null = null;
 let taskExecutor: TaskExecutor | null = null;
+let plannerMemoryStore: PlannerMemoryStore | null = null;
 let prometheusQueryOverrides: Record<string, string> = {};
 let prometheusDefaultLabels: Record<string, string> = {};
 let activeEngines: InferenceEngine[] = [...ALL_ENGINES];
@@ -627,6 +629,14 @@ function createPimClawService(): OpenClawPluginService {
       await fs.mkdir(headWorkspaceDir, { recursive: true });
       await fs.mkdir(plannerWorkspaceDir, { recursive: true });
 
+      plannerMemoryStore = new PlannerMemoryStore(plannerWorkspaceDir, 100, 100, fileLogger ?? undefined);
+      await plannerMemoryStore.load();
+      pluginLogger?.debug('[PimClaw] PlannerMemoryStore loaded', {
+        workspaceDir: plannerWorkspaceDir,
+        episodeCount: plannerMemoryStore.episodeCount,
+        lessonCount: plannerMemoryStore.lessonCount,
+      });
+
       // 2. PlannerTrigger — spawns Planner agent via OpenClaw API
       plannerFallbackTaskType = plannerConfig.fallbackTaskType ?? 'scale-up';
       plannerFallbackConfig = plannerConfig.fallbackConfig ?? { replicaDelta: 1 };
@@ -643,7 +653,7 @@ function createPimClawService(): OpenClawPluginService {
         agentId: plannerConfig.agentId ?? 'pimclaw-planner',
         timeoutSeconds: plannerConfig.timeoutSeconds ?? 600,
         workspaceDir: plannerWorkspaceDir,
-      }, registry, fileLogger);
+      }, registry, plannerMemoryStore, fileLogger);
 
       ctx.logger.info(
         `[PimClaw] Dedicated agent workspaces ready: head=${headWorkspaceDir}, planner=${plannerWorkspaceDir}`,
@@ -670,7 +680,14 @@ function createPimClawService(): OpenClawPluginService {
       );
 
       // 4. Scheduler — polls for ready tasks, spawns Workers
-      scheduler = new SchedulerAgent(registry, taskRecorder, undefined, taskExecutor ?? undefined, fileLogger);
+      scheduler = new SchedulerAgent(
+        registry,
+        taskRecorder,
+        undefined,
+        taskExecutor ?? undefined,
+        plannerMemoryStore ?? undefined,
+        fileLogger,
+      );
       await scheduler.initialize();
       scheduler.run().catch((err) =>
         ctx.logger.error(`[PimClaw] Scheduler error: ${err}`),
@@ -788,6 +805,10 @@ function createPimClawService(): OpenClawPluginService {
       if (taskRecorder) {
         await taskRecorder.persist();
         taskRecorder = null;
+      }
+      if (plannerMemoryStore) {
+        await plannerMemoryStore.flush();
+        plannerMemoryStore = null;
       }
       if (engineMcpClient) {
         await engineMcpClient.disconnect();

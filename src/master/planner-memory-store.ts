@@ -1,5 +1,6 @@
 import fs from 'fs/promises';
 import path from 'path';
+import type { PluginLogger } from 'openclaw/plugin-sdk/plugin-entry';
 
 import type {
   PlannerMemoryAnomalySummary,
@@ -198,6 +199,7 @@ export class PlannerMemoryStore {
   private readonly maxLessons: number;
   private episodes: PlannerMemoryEpisode[] = [];
   private lessons: PlannerMemoryLesson[] = [];
+  private readonly logger: PluginLogger | null;
   private index: PlannerMemoryIndex = {
     version: 1,
     byDeployment: {},
@@ -208,16 +210,32 @@ export class PlannerMemoryStore {
   };
   private dirty = false;
 
-  constructor(workspaceDir: string, maxEpisodes: number = 100, maxLessons: number = 100) {
+  constructor(workspaceDir: string, maxEpisodes: number = 100, maxLessons: number = 100, logger?: PluginLogger) {
     this.maxEpisodes = maxEpisodes;
     this.maxLessons = maxLessons;
     this.memoryDir = path.join(workspaceDir, 'memory');
     this.episodesFilePath = path.join(this.memoryDir, 'episodes.json');
     this.lessonsFilePath = path.join(this.memoryDir, 'lessons.json');
     this.indexFilePath = path.join(this.memoryDir, 'index.json');
+    this.logger = logger ?? null;
+  }
+
+  private debug(message: string, context?: Record<string, unknown>): void {
+    if (context) {
+      this.logger?.debug(`[PlannerMemoryStore] ${message}`, context);
+      if (!this.logger) console.debug(`[PlannerMemoryStore] ${message}`, context);
+      return;
+    }
+    this.logger?.debug(`[PlannerMemoryStore] ${message}`);
+    if (!this.logger) console.debug(`[PlannerMemoryStore] ${message}`);
   }
 
   async load(): Promise<void> {
+    this.debug('loading planner memory from disk', {
+      memoryDir: this.memoryDir,
+      maxEpisodes: this.maxEpisodes,
+      maxLessons: this.maxLessons,
+    });
     const [episodes, lessons, index] = await Promise.all([
       this.readJsonFile<PlannerMemoryEpisode[]>(this.episodesFilePath, []),
       this.readJsonFile<PlannerMemoryLesson[]>(this.lessonsFilePath, []),
@@ -228,12 +246,18 @@ export class PlannerMemoryStore {
     this.lessons = lessons.slice(-this.maxLessons);
     this.index = index ?? this.rebuildIndex();
     this.dirty = false;
+    this.debug('planner memory loaded', {
+      episodeCount: this.episodes.length,
+      lessonCount: this.lessons.length,
+      rebuiltIndex: !index,
+      deploymentCount: Object.keys(this.index.byDeployment).length,
+    });
   }
 
   upsertEpisode(episode: PlannerMemoryEpisode): void {
-    const index = this.episodes.findIndex((item) => item.episodeId === episode.episodeId);
-    if (index >= 0) {
-      this.episodes[index] = episode;
+    const existingIndex = this.episodes.findIndex((item) => item.episodeId === episode.episodeId);
+    if (existingIndex >= 0) {
+      this.episodes[existingIndex] = episode;
     } else {
       this.episodes.push(episode);
     }
@@ -243,12 +267,21 @@ export class PlannerMemoryStore {
     this.synthesizeLessonsForDeployment(episode.deploymentName);
     this.index = this.rebuildIndex();
     this.dirty = true;
+    this.debug('episode upserted', {
+      episodeId: episode.episodeId,
+      taskId: episode.taskId,
+      deploymentName: episode.deploymentName,
+      outcomeClass: episode.outcomeClass,
+      operation: existingIndex >= 0 ? 'update' : 'insert',
+      episodeCount: this.episodes.length,
+      activeLessonCount: this.getActiveLessons(episode.deploymentName, this.maxLessons).length,
+    });
   }
 
   upsertLesson(lesson: PlannerMemoryLesson): void {
-    const index = this.lessons.findIndex((item) => item.lessonId === lesson.lessonId);
-    if (index >= 0) {
-      this.lessons[index] = lesson;
+    const existingIndex = this.lessons.findIndex((item) => item.lessonId === lesson.lessonId);
+    if (existingIndex >= 0) {
+      this.lessons[existingIndex] = lesson;
     } else {
       this.lessons.push(lesson);
     }
@@ -257,6 +290,15 @@ export class PlannerMemoryStore {
     }
     this.index = this.rebuildIndex();
     this.dirty = true;
+    this.debug('lesson upserted', {
+      lessonId: lesson.lessonId,
+      deploymentName: lesson.deploymentScope.deploymentName,
+      taskType: lesson.deploymentScope.taskType,
+      status: lesson.status,
+      confidence: lesson.confidence,
+      operation: existingIndex >= 0 ? 'update' : 'insert',
+      lessonCount: this.lessons.length,
+    });
   }
 
   getRecentEpisodes(deploymentName: string, limit: number = 5): PlannerMemoryEpisode[] {
@@ -280,9 +322,17 @@ export class PlannerMemoryStore {
 
   async flush(): Promise<void> {
     if (!this.dirty) {
+      this.debug('flush skipped because planner memory is unchanged');
       return;
     }
 
+    this.debug('flushing planner memory to disk', {
+      episodesFilePath: this.episodesFilePath,
+      lessonsFilePath: this.lessonsFilePath,
+      indexFilePath: this.indexFilePath,
+      episodeCount: this.episodes.length,
+      lessonCount: this.lessons.length,
+    });
     await fs.mkdir(this.memoryDir, { recursive: true });
     await Promise.all([
       this.writeJsonFile(this.episodesFilePath, this.episodes),
@@ -290,6 +340,11 @@ export class PlannerMemoryStore {
       this.writeJsonFile(this.indexFilePath, this.index),
     ]);
     this.dirty = false;
+    this.debug('planner memory flush completed', {
+      episodeCount: this.episodes.length,
+      lessonCount: this.lessons.length,
+      deploymentCount: Object.keys(this.index.byDeployment).length,
+    });
   }
 
   get episodeCount(): number {
@@ -359,6 +414,14 @@ export class PlannerMemoryStore {
     }
 
     this.lessons = [...preservedLessons, ...synthesizedLessons].slice(-this.maxLessons);
+    this.debug('synthesized deployment lessons', {
+      deploymentName,
+      deploymentEpisodeCount: deploymentEpisodes.length,
+      synthesizedLessonCount: synthesizedLessons.length,
+      activeLessonIds: synthesizedLessons
+        .filter((lesson) => lesson.status === 'active')
+        .map((lesson) => lesson.lessonId),
+    });
   }
 
   private rebuildIndex(): PlannerMemoryIndex {

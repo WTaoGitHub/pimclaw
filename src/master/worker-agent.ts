@@ -91,16 +91,32 @@ export class WorkerAgent extends BaseAgent {
 
   private async syncPlannerMemory(): Promise<void> {
     if (!this.plannerMemoryStore) {
+      this.debug('planner memory sync skipped because no store is configured', {
+        taskId: this.task.taskId,
+      });
       return;
     }
 
     const latestTask = this.taskRecorder.getTask(this.task.taskId);
     if (!latestTask) {
+      this.debug('planner memory sync skipped because task could not be reloaded', {
+        taskId: this.task.taskId,
+      });
       return;
     }
 
+    this.debug('syncing planner memory from latest task state', {
+      taskId: latestTask.taskId,
+      deploymentName: latestTask.llmDeploymentName,
+      status: latestTask.status,
+      feedbackOutcome: latestTask.feedback?.outcome,
+    });
     this.plannerMemoryStore.upsertEpisode(buildPlannerMemoryEpisodeFromTask(latestTask));
     await this.plannerMemoryStore.flush();
+    this.debug('planner memory sync completed', {
+      taskId: latestTask.taskId,
+      deploymentName: latestTask.llmDeploymentName,
+    });
   }
 
   /**

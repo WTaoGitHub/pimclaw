@@ -123,6 +123,9 @@ describe('PimClaw v2 full pipeline E2E', () => {
   });
 
   it('anomaly detected → planned → scheduled → executed → done', async () => {
+    const plannerMemoryStore = new PlannerMemoryStore(tmpDir);
+    await plannerMemoryStore.load();
+
     // ================================================================
     // PHASE 1: Prometheus Metrics Collection (pimclaw_query_metrics)
     // ================================================================
@@ -176,7 +179,7 @@ describe('PimClaw v2 full pipeline E2E', () => {
       agentId: 'pimclaw-planner',
       timeoutSeconds: 600,
       workspaceDir: '/tmp/pimclaw-planner-workspace',
-    });
+    }, undefined, plannerMemoryStore);
     const anomalyReceiver = new AnomalyReceiver(recorder, plannerTrigger);
 
     // Head Agent's anomaly events based on metrics analysis
@@ -311,7 +314,7 @@ describe('PimClaw v2 full pipeline E2E', () => {
     // ================================================================
     const { client: mockEngineClient, calls: engineCalls } = createMockEngineClient();
     const taskExecutor = new TaskExecutor(mockEngineClient);
-    const scheduler = new SchedulerAgent(registry, recorder, 2, taskExecutor);
+    const scheduler = new SchedulerAgent(registry, recorder, 2, taskExecutor, plannerMemoryStore);
     await scheduler.initialize();
 
     // Run a single scheduling cycle (don't start the polling loop)
@@ -363,6 +366,7 @@ describe('PimClaw v2 full pipeline E2E', () => {
     // planning → ready → scheduling → scheduled → running → done
     // (We can't see intermediate transitions, but final state is 'done')
     expect(finalTask.error).toBeUndefined();
+    expect(finalTask.feedback?.statusSummary).toBe('completed-successfully');
 
     // Verify task counts reflect completion
     const finalCounts = recorder.getTaskCounts();
@@ -380,6 +384,11 @@ describe('PimClaw v2 full pipeline E2E', () => {
     // Scheduler should be registered
     const schedulerStatus = registry.getAgentStatus('scheduler-1');
     expect(schedulerStatus).toBeDefined();
+
+    const recentEpisodes = plannerMemoryStore.getRecentEpisodes('minimax-m2-1-prod', 1);
+    expect(recentEpisodes).toHaveLength(1);
+    expect(recentEpisodes[0]?.taskId).toBe(taskId);
+    expect(recentEpisodes[0]?.taskStatus).toBe('done');
 
     // Clean up
     await scheduler.shutdown();

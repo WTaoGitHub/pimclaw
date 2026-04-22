@@ -179,6 +179,14 @@ export class PlannerTrigger {
       recentEpisodeCount: memoryContext?.recentEpisodes.length ?? 0,
       activeLessonCount: memoryContext?.activeLessons.length ?? 0,
     });
+    if (memoryContext) {
+      this.debug('attaching planner memory context', {
+        taskId,
+        deploymentName: payload.deploymentName,
+        recentEpisodeIds: memoryContext.recentEpisodes.map((episode) => episode.episodeId),
+        activeLessonIds: memoryContext.activeLessons.map((lesson) => lesson.lessonId),
+      });
+    }
     this.debug('calling OpenClaw agent API', {
       agentId: this.config.agentId,
       timeoutSeconds: this.config.timeoutSeconds,
