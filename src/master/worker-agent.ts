@@ -9,9 +9,10 @@
 
 import { BaseAgent } from './base-agent.js';
 import { ComponentRegistry } from './component-registry.js';
+import { buildPlannerMemoryEpisodeFromTask, PlannerMemoryStore } from './planner-memory-store.js';
 import { TaskStatusRecorder } from './task-status-recorder.js';
 import { TaskExecutor } from './task-executor.js';
-import { Task, AgentRuntimeStatus } from '../types/index.js';
+import { Task, AgentRuntimeStatus, TaskFeedback } from '../types/index.js';
 import type { PluginLogger } from 'openclaw/plugin-sdk/plugin-entry';
 
 /**
@@ -22,6 +23,7 @@ export class WorkerAgent extends BaseAgent {
   private task: Task;
   private taskRecorder: TaskStatusRecorder;
   private taskExecutor: TaskExecutor | null;
+  private plannerMemoryStore: PlannerMemoryStore | null;
   private executionTimeout: number = 30 * 60 * 1000; // 30 minutes
   private readonly logger: PluginLogger | null;
 
@@ -30,6 +32,7 @@ export class WorkerAgent extends BaseAgent {
     taskRecorder: TaskStatusRecorder,
     task: Task,
     taskExecutor?: TaskExecutor,
+    plannerMemoryStore?: PlannerMemoryStore,
     logger?: PluginLogger,
   ) {
     super('worker', registry, {
@@ -39,6 +42,7 @@ export class WorkerAgent extends BaseAgent {
     this.task = task;
     this.taskRecorder = taskRecorder;
     this.taskExecutor = taskExecutor ?? null;
+    this.plannerMemoryStore = plannerMemoryStore ?? null;
     this.logger = logger ?? null;
   }
 
@@ -54,6 +58,49 @@ export class WorkerAgent extends BaseAgent {
 
   private isRetryableError(errorMessage: string): boolean {
     return !errorMessage.includes('No TaskExecutor available');
+  }
+
+  private buildSuccessFeedback(result: Record<string, unknown> | null): TaskFeedback {
+    const resultSignals = result ? Object.keys(result) : [];
+
+    return {
+      version: 1,
+      statusSummary: 'completed-successfully',
+      outcome: 'unknown',
+      source: 'system',
+      generatedAt: new Date(),
+      summary: `Task ${this.task.taskType} completed successfully for ${this.task.llmDeploymentName}.`,
+      details: resultSignals.length > 0 ? { resultSignals } : undefined,
+    };
+  }
+
+  private buildFailureFeedback(statusSummary: TaskFeedback['statusSummary'], outcome: TaskFeedback['outcome'], errorMessage: string): TaskFeedback {
+    return {
+      version: 1,
+      statusSummary,
+      outcome,
+      source: 'system',
+      generatedAt: new Date(),
+      summary: `Task ${this.task.taskType} did not complete successfully for ${this.task.llmDeploymentName}: ${errorMessage}`,
+      details: {
+        errorSignals: [errorMessage],
+        recommendedCaution: 'Avoid repeating the same plan without reviewing the execution failure.',
+      },
+    };
+  }
+
+  private async syncPlannerMemory(): Promise<void> {
+    if (!this.plannerMemoryStore) {
+      return;
+    }
+
+    const latestTask = this.taskRecorder.getTask(this.task.taskId);
+    if (!latestTask) {
+      return;
+    }
+
+    this.plannerMemoryStore.upsertEpisode(buildPlannerMemoryEpisodeFromTask(latestTask));
+    await this.plannerMemoryStore.flush();
   }
 
   /**
@@ -92,6 +139,11 @@ export class WorkerAgent extends BaseAgent {
         result as Record<string, unknown> ?? {},
         null,
       );
+      await this.taskRecorder.updateTaskFeedback(
+        this.task.taskId,
+        this.buildSuccessFeedback((result as Record<string, unknown> | null) ?? null),
+      );
+      await this.syncPlannerMemory();
 
       // Update agent counters
       const status = this.registry.getAgentStatus(this.agentId);
@@ -103,6 +155,7 @@ export class WorkerAgent extends BaseAgent {
       this.updateAction('Task execution completed');
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
+      const shouldRetry = !this.aborted && this.isRetryableError(errorMessage) && this.task.retryCount < this.task.maxRetries;
 
       // Handle abort
       if (this.aborted) {
@@ -112,6 +165,11 @@ export class WorkerAgent extends BaseAgent {
           null,
           `Task aborted: ${errorMessage}`,
         );
+        await this.taskRecorder.updateTaskFeedback(
+          this.task.taskId,
+          this.buildFailureFeedback('execution-failed', 'failed-operationally', `Task aborted: ${errorMessage}`),
+        );
+        await this.syncPlannerMemory();
         this.registry.recordError(
           this.agentId,
           `Aborted task ${this.task.taskId}: ${errorMessage}`
@@ -124,6 +182,15 @@ export class WorkerAgent extends BaseAgent {
           null,
           `Task execution timeout after ${this.executionTimeout}ms`,
         );
+        await this.taskRecorder.updateTaskFeedback(
+          this.task.taskId,
+          this.buildFailureFeedback(
+            'timed-out',
+            'failed-operationally',
+            `Task execution timeout after ${this.executionTimeout}ms`,
+          ),
+        );
+        await this.syncPlannerMemory();
 
         // Record in agent error log
         this.registry.recordError(
@@ -138,12 +205,19 @@ export class WorkerAgent extends BaseAgent {
           null,
           errorMessage,
         );
+        if (!shouldRetry) {
+          await this.taskRecorder.updateTaskFeedback(
+            this.task.taskId,
+            this.buildFailureFeedback('execution-failed', 'failed-operationally', errorMessage),
+          );
+          await this.syncPlannerMemory();
+        }
 
         this.registry.recordError(this.agentId, errorMessage);
       }
 
       // Handle retry logic (skip if aborted — don't retry aborted tasks)
-      if (!this.aborted && this.isRetryableError(errorMessage) && this.task.retryCount < this.task.maxRetries) {
+      if (shouldRetry) {
         // Reset task to ready for retry
         this.debug('resetting task for retry', { taskId: this.task.taskId, retryCount: this.task.retryCount, maxRetries: this.task.maxRetries });
         await this.taskRecorder.resetTaskForRetry(this.task.taskId);

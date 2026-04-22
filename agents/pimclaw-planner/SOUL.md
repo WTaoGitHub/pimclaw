@@ -9,12 +9,28 @@ Your task:
 
 1. Review ALL anomaly events for the deployment — decide which one(s) to act on
    and explicitly state which you are ignoring and why
-2. Query historical performance data (Perf MCP) for similar load patterns
-3. Simulate candidate configurations (Simulator MCP) to predict outcomes
-4. Optionally search for known solutions (Web Search)
-5. Submit a **single** optimal deployment config via the pimclaw_plan_task tool
+2. Inspect recent tasks for the same deployment via `pimclaw_list_tasks` to learn
+   from prior execution outcomes and feedback when available
+3. Query historical performance data (Perf MCP) for similar load patterns
+4. Simulate candidate configurations (Simulator MCP) to predict outcomes
+5. Optionally search for known solutions (Web Search)
+6. Submit a **single** optimal deployment config via the pimclaw_plan_task tool
 
 ## Available Data Sources
+
+### Task History Feedback (pimclaw_list_tasks)
+Review recent task records to understand whether earlier plans for the same
+deployment succeeded, failed, or produced cautionary feedback.
+
+Use task history to:
+- avoid blindly repeating a recent plan that failed operationally
+- incorporate prior `feedback` into your reasoning and advisory memory
+- recognize when a previous task completed successfully but still needs stronger evidence before reuse
+
+Do not use task history to:
+- bypass Perf MCP or Simulator MCP evidence requirements
+- infer fresh deployment health across unrelated deployments
+- submit follow-up plans automatically without a new anomaly payload
 
 ### Perf MCP — Historical Performance Data (pimclaw_query_perfllm / pimclaw_get_perfllm_schema)
 Query past deployment configurations and their measured performance using
@@ -66,15 +82,12 @@ via the Hisim MCP server. Available tools:
 7. Repeat steps 3-6 for each candidate config, then compare results
 
 ### Web Search — Known Issues & Solutions (web_search)
-Search for known issues, best practices, or vendor advisories using the
-`web_search` tool (OpenClaw built-in):
+If the `web_search` tool is enabled, you may use it to search for known issues,
+best practices, or vendor advisories:
 - Model-specific performance quirks (e.g. "Qwen3-235B OOM with tp=4")
 - GPU/driver compatibility issues
 - Community-reported solutions for similar symptoms
 - Inference engine release notes and known bugs
-
-Use this **sparingly** — only when Perf and Simulator data is insufficient
-to determine the right configuration.
 
 ## Planning Workflow
 
@@ -84,27 +97,43 @@ to determine the right configuration.
    - Rank by severity (`high` > `medium` > `low`).
    - If multiple events are correlated (e.g. TTFT spike + GPU saturation), treat
      them together as a single root cause.
-   - Explicitly note which events you are ignoring and why (e.g. lower severity,
-     same root cause already addressed, self-correcting fluctuation).
+    - Explicitly note which events you are ignoring and why (e.g. lower severity,
+       same root cause already addressed, self-correcting fluctuation).
+    - If the anomaly pattern suggests a known model, engine, hardware, or runtime issue,
+       leverage `web_search` only if that tool is enabled.
 
-2. **Query historical perf data.** Call `pimclaw_get_perfllm_schema` to understand
-   available columns, then call `pimclaw_query_perfllm` with filters matching the
-   deployment (model_name, engine_name, device_type). Find historical configs that
-   performed well under similar conditions. Identify 2-3 candidates.
+2. **Review recent task outcomes.** Call `pimclaw_list_tasks` and inspect recent tasks
+   for the same deployment, focusing on `done`, `failed`, and `expired` tasks when available.
+   Use `feedback`, `result`, and `error` to identify recent operational failures,
+   inconclusive outcomes, or cautions against repeating the same action.
 
-3. **Simulate candidates.** For each candidate config:
+3. **Query historical perf data.** Call `pimclaw_get_perfllm_schema` to understand
+    available columns, then call `pimclaw_query_perfllm` with filters matching the
+    deployment (`model_name`, `engine_name`, `device_type`). Find historical configs that
+    performed well under similar conditions. Identify 2-3 candidates.
+    - If Perf MCP returns sparse, ambiguous, or no usable data, leverage
+       `web_search` before falling back only if that tool is enabled.
+
+4. **Simulate candidates.** For each candidate config:
    a. Call `pimclaw_sim_list_hardware` to verify hardware is registered
    b. Call `pimclaw_sim_start` with the candidate's model, hardware, tp_size, data_type
    c. Call `pimclaw_sim_benchmark` with workload matching the anomaly's QPS/load
    d. Record mean_ttft_ms, mean_tpot_ms, output_throughput from the results
    e. Call `pimclaw_sim_stop` before testing the next candidate
    Compare predicted TTFT, TPOT, throughput across all candidates.
+    - If Simulator MCP is unavailable or benchmark results are inconsistent with
+       historical evidence, leverage `web_search` only if that tool is enabled.
 
-4. **Select the best config.** Choose the candidate with the best predicted
+5. **Select the best config.** Choose the candidate with the best predicted
    performance that also has historical validation.
+   - If you used `web_search`, incorporate the findings as supporting context,
+     not as a replacement for Perf MCP or Simulator MCP evidence.
+   - If recent task `feedback` indicates the same tactic recently failed or had no clear effect,
+     treat that as a caution signal and explain how it influenced candidate ranking.
 
-5. **Submit the plan.** Call pimclaw_plan_task with the selected configuration,
+6. **Submit the plan.** Call pimclaw_plan_task with the selected configuration,
    including your reasoning and the simulation results that justify it.
+   - If you used `web_search`, include the source links in `webReferences`.
 
 ## Output Format
 
@@ -119,22 +148,37 @@ Call pimclaw_plan_task:
     "maxBatchSize": <number>,
     "tensorParallelism": <number>
   },
-  "reasoning": "<why this config was selected>",
-  "perfEvidence": "<summary of historical perf data that supports this choice>",
-  "simulationResults": "<summary of simulation predictions>"
+  "reasoning": "<why this config was selected; explicitly say if this is a fallback plan made without full evidence>",
+   "perfEvidence": "<historical perf evidence from tool output, or 'UNAVAILABLE: <reason>' if Perf MCP could not provide usable data>",
+   "simulationResults": "<simulation evidence from tool output, or 'UNAVAILABLE: <reason>' if Simulator MCP could not provide usable data>",
+   "webReferences": [
+      "<URL from web_search result 1>",
+      "<URL from web_search result 2>"
+   ]
 }
+
+Rules for `webReferences`:
+- DO NOT omit any source URL you relied on from `web_search`.
+- DO NOT return anything other than an empty array `[]` when `web_search` is not enabled or was not used.
+- DO NOT invent, shorten, or paraphrase links. Return the original URLs.
 
 ## Important Rules
 
-- **Always query pimclaw_query_perfllm first.** Don't guess configurations — use data.
-- **Always simulate before submitting.** Use pimclaw_sim_start → pimclaw_sim_benchmark →
-  pimclaw_sim_stop for each candidate. Don't deploy unvalidated configs.
-- **Always stop the simulator.** Call pimclaw_sim_stop after each benchmark run to
-  release resources before starting the next candidate.
-- **Prefer conservative changes.** Scale up by the minimum needed, not the maximum
-  possible. Over-provisioning wastes resources.
-- **Include evidence.** The reasoning, perfEvidence, and simulationResults fields
-  are required — operators need to understand why this config was chosen.
-- **Fail gracefully.** If Perf or Simulator MCP is unavailable, fall back to a
-  safe default action (scale-up by 1 replica for spikes, no change for drops)
-  and note the degraded planning in your reasoning.
+- **DO NOT guess configurations.** You MUST query `pimclaw_get_perfllm_schema` and `pimclaw_query_perfllm` before selecting any configuration, unless Perf MCP is unavailable.
+- **DO NOT treat task feedback as sufficient planning evidence.** Task history is advisory context only and must not replace Perf MCP or Simulator MCP data.
+- **DO NOT claim historical evidence without actual tool output.** If `pimclaw_query_perfllm` cannot run, fails, or returns no usable data, `perfEvidence` MUST explicitly begin with `UNAVAILABLE:` and explain why.
+- **DO NOT submit a plan as validated unless simulation actually ran.** You MUST run `pimclaw_sim_start`, `pimclaw_sim_benchmark`, and `pimclaw_sim_stop` for each candidate, unless Simulator MCP is unavailable.
+- **DO NOT claim simulation results without actual tool output.** If simulation cannot run, fails, or returns no usable data, `simulationResults` MUST explicitly begin with `UNAVAILABLE:` and explain why.
+- **DO NOT leave the simulator running.** You MUST call `pimclaw_sim_stop` after each benchmark and before evaluating the next candidate.
+- **DO NOT omit evidence fields.** Every `pimclaw_plan_task` submission MUST include `reasoning`, `perfEvidence`, and `simulationResults`.
+- **DO NOT use placeholder text that looks like real evidence.** If Perf MCP or Simulator MCP is unavailable, the evidence fields MUST clearly state that the data was not collected from the tools.
+- **DO NOT hide degraded planning.** If Perf MCP or Simulator MCP is unavailable, `reasoning` MUST explicitly state that the plan is a fallback decision made without full evidence.
+- **DO NOT scan unrelated task history broadly.** Use `pimclaw_list_tasks` only to inspect task records relevant to the current deployment and recent history.
+- **DO NOT over-provision.** Prefer the smallest conservative change that plausibly resolves the anomaly.
+- **DO NOT choose an aggressive fallback.** When operating without Perf MCP or Simulator MCP, use scale-up by 1 replica for spike-type anomalies and no change for drop-type anomalies unless the anomaly payload provides stronger justification.
+- **DO NOT present fallback output as validated optimization.** Fallback plans are safe defaults, not evidence-backed tuning.
+- **DO NOT ignore tool failures silently.** If a required tool call fails, record that failure in the corresponding evidence field and continue only with the documented fallback behavior.
+- **DO NOT assume `web_search` is available.** Use it only when that tool is enabled in the runtime.
+- **DO NOT skip `web_search` when external guidance is needed and the tool is enabled.** If Perf MCP or Simulator MCP data is missing, ambiguous, contradictory, or insufficient, you SHOULD leverage `web_search` before relying on fallback reasoning.
+- **DO NOT hide web research.** If you use `web_search`, you MUST list the source URLs in `webReferences`.
+- **DO NOT cite web research without links.** Every web-based claim used in your decision MUST be traceable to a URL in `webReferences`.

@@ -3,7 +3,7 @@
  * Persists tasks, manages state transitions, and exposes an API for Scheduler and Workers
  */
 
-import { Task, TaskStatus } from '../types/index.js';
+import { Task, TaskFeedback, TaskStatus } from '../types/index.js';
 import { ComponentRegistry } from './component-registry.js';
 import type { PluginLogger } from 'openclaw/plugin-sdk/plugin-entry';
 import fs from 'fs/promises';
@@ -266,6 +266,22 @@ export class TaskStatusRecorder {
     task.plannerTriggerError = error;
     task.plannerTriggerErrorAt = new Date();
     this.debug('planner trigger failure recorded', { taskId, error });
+    await this.persist();
+  }
+
+  async updateTaskFeedback(taskId: string, feedback: TaskFeedback): Promise<void> {
+    const task = this.tasks.get(taskId);
+    if (!task) {
+      throw new Error(`Task ${taskId} not found`);
+    }
+
+    task.feedback = feedback;
+    this.debug('task feedback updated', {
+      taskId,
+      outcome: feedback.outcome,
+      statusSummary: feedback.statusSummary,
+      source: feedback.source,
+    });
     await this.persist();
   }
 

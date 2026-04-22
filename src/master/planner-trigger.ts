@@ -5,6 +5,8 @@
 
 import type { ValidatedEvent } from './anomaly-receiver.js';
 import type { ComponentRegistry } from './component-registry.js';
+import type { PlannerMemoryEpisode, PlannerMemoryLesson } from '../types/index.js';
+import { PlannerMemoryStore } from './planner-memory-store.js';
 import { TaskStatusRecorder } from './task-status-recorder.js';
 import type { AgentCounters, TaskStatus } from '../types/index.js';
 import type { PluginLogger } from 'openclaw/plugin-sdk/plugin-entry';
@@ -38,6 +40,12 @@ export interface PlannerTriggerPayload {
   taskId: string;
 }
 
+export interface PlannerMemoryContextPayload {
+  deploymentName: string;
+  recentEpisodes: PlannerMemoryEpisode[];
+  activeLessons: PlannerMemoryLesson[];
+}
+
 const DEFAULT_CONFIG: PlannerTriggerConfig = {
   agentId: 'pimclaw-planner',
   timeoutSeconds: 600,
@@ -48,14 +56,16 @@ export class PlannerTrigger {
   private openclawApi: OpenClawAgentApi;
   private config: PlannerTriggerConfig;
   private readonly registry: ComponentRegistry | null;
+  private readonly plannerMemoryStore: PlannerMemoryStore | null;
   private readonly logger: PluginLogger | null;
   private readonly agentId = 'planner-trigger';
 
-  constructor(openclawApi: OpenClawAgentApi, taskRecorder: TaskStatusRecorder, config?: Partial<PlannerTriggerConfig>, registry?: ComponentRegistry, logger?: PluginLogger) {
+  constructor(openclawApi: OpenClawAgentApi, taskRecorder: TaskStatusRecorder, config?: Partial<PlannerTriggerConfig>, registry?: ComponentRegistry, plannerMemoryStore?: PlannerMemoryStore, logger?: PluginLogger) {
     this.openclawApi = openclawApi;
     this.taskRecorder = taskRecorder;
     this.config = { ...DEFAULT_CONFIG, ...config };
     this.registry = registry ?? null;
+    this.plannerMemoryStore = plannerMemoryStore ?? null;
     this.logger = logger ?? null;
 
     if (this.registry) {
@@ -134,6 +144,18 @@ export class PlannerTrigger {
     return message;
   }
 
+  private buildMemoryContextPayload(deploymentName: string): PlannerMemoryContextPayload | null {
+    if (!this.plannerMemoryStore) {
+      return null;
+    }
+
+    return {
+      deploymentName,
+      recentEpisodes: this.plannerMemoryStore.getRecentEpisodes(deploymentName, 5),
+      activeLessons: this.plannerMemoryStore.getActiveLessons(deploymentName, 3),
+    };
+  }
+
   async trigger(events: ValidatedEvent[], taskId: string): Promise<void> {
     this.updateCounters({ triggersAttempted: 1 });
     this.registry?.updateAgentAction(this.agentId, 'triggering planner');
@@ -150,9 +172,12 @@ export class PlannerTrigger {
       deploymentName: events[0]?.deploymentName ?? 'unknown',
       taskId,
     };
+    const memoryContext = this.buildMemoryContextPayload(payload.deploymentName);
     this.debug('planner runtime launch requested', {
       taskId,
       deploymentName: payload.deploymentName,
+      recentEpisodeCount: memoryContext?.recentEpisodes.length ?? 0,
+      activeLessonCount: memoryContext?.activeLessons.length ?? 0,
     });
     this.debug('calling OpenClaw agent API', {
       agentId: this.config.agentId,
@@ -169,16 +194,27 @@ export class PlannerTrigger {
       task: [
         `Plan optimal config for the LLM deployment "${payload.deploymentName}" to address the anomalies listed in the JSON payload below.`,
         `Review ALL ${events.length} anomaly event(s) for this deployment, decide which one(s) to handle (you may ignore lower-priority ones), and submit a SINGLE plan via pimclaw_plan_task using taskId "${taskId}".`,
+        memoryContext
+          ? `Recent planner memory is attached separately. Use it as advisory context only; do not treat it as a substitute for Perf MCP or Simulator MCP evidence.`
+          : 'No prior planner memory context is available for this deployment.',
         JSON.stringify(payload),
       ].join('\n\n'),
       mode: 'run',
       cleanup: 'delete',
       runTimeoutSeconds: this.config.timeoutSeconds,
       workspaceDir: this.config.workspaceDir,
-      attachments: [{
-        type: 'json',
-        content: JSON.stringify(payload),
-      }],
+      attachments: [
+        {
+          type: 'json',
+          content: JSON.stringify(payload),
+        },
+        ...(memoryContext
+          ? [{
+              type: 'json',
+              content: JSON.stringify(memoryContext),
+            }]
+          : []),
+      ],
     });
 
     await new Promise<void>((resolve, reject) => {

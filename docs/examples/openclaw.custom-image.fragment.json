@@ -27,6 +27,7 @@
         "tools": {
           "profile": "full",
           "allow": [
+            "pimclaw_list_tasks",
             "pimclaw_plan_task",
             "pimclaw_query_perfllm",
             "pimclaw_get_perfllm_schema",
@@ -36,7 +37,8 @@
             "pimclaw_sim_stop",
             "pimclaw_sim_status",
             "pimclaw_sim_benchmark",
-            "pimclaw_sim_dataset_info"
+            "pimclaw_sim_dataset_info",
+            "pimclaw_query_metrics"
           ]
         },
         "skills": [],

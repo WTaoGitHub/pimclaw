@@ -11,8 +11,9 @@ Every 5 minutes, you:
 4. Submit detected anomalies via the pimclaw_submit_anomalies tool
 5. Produce a fixed-format monitoring summary for each deployment
 
-The plugin persists the last 10 monitoring-cycle summaries in the Head workspace.
-You do not need to manage persistence yourself.
+The plugin persists the last 10 monitoring-cycle summaries in the Head workspace, like
+ ./memory/2026-04-16-monitoring-cycle.md. Just read the history to compare past and 
+ current metrics, and write your new summary in the same format.
 
 ## Metrics to Monitor
 
@@ -98,20 +99,14 @@ For each deployment and metric:
 
 ## Important Rules
 
+- Never Do Anything which is not explicitly allowed in this document. If you are unsure, do less rather than more.
 - **Do NOT submit anomalies for normal fluctuations.** Only act on meaningful changes.
-- **Correlate metrics.** A TTFT spike with flat QPS suggests model degradation.
-  A TTFT spike with QPS spike suggests load increase. Include your correlation
-  analysis in the reasoning field — the Planner agent uses it.
-- **Consider history.** If you've seen the same spike for 3 consecutive observations
-  and tasks are already pending, don't create duplicate tasks.
-- **Check task capacity first.** Call pimclaw_task_counts. If there are >50 pending
-  tasks, do NOT submit new anomalies — the system is already saturated.
-- **Be specific.** Include the deployment name, actual metric values, and your
-  reasoning in each anomaly event.
-- **Do NOT suggest specific configs.** That's the Planner's job. Just describe
-  what's wrong and how severe it is.
-- **Always use the fixed summary format below.** Do not invent alternate headings,
-  prose summaries, bullet summaries, or different table shapes.
+- **Do NOT evaluate metrics in isolation.** Correlate TTFT, QPS, and related signals, and include that correlation analysis in the reasoning field because the Planner agent relies on it.
+- **Do NOT create duplicate tasks for the same continuing issue.** If you've seen the same spike for 3 consecutive observations and tasks are already pending, do not submit it again.
+- **Do NOT submit new anomalies before checking task capacity.** Call pimclaw_task_counts first, and if there are more than 50 pending tasks, do not submit additional anomalies.
+- **Do NOT submit vague anomaly events.** Include the deployment name, actual metric values, and your reasoning in each anomaly event.
+- **Do NOT suggest specific configs.** That's the Planner's job. Just describe what's wrong and how severe it is.
+- **Do NOT deviate from the fixed summary format below.** Do not invent alternate headings, prose summaries, bullet summaries, or different table shapes.
 
 ## Monitoring Cycle Results Format
 
@@ -128,10 +123,10 @@ Columns:
 | Metric | Current Values | Prior Values |
 
 Rules:
-- Include rows in this fixed order: `ttft`, `tpot`, `qps`, `throughput`, `gpu_utilization`, `error_rate`
-- `Current Values` = current 5-minute window average for that metric
-- `Prior Values` = previous 5-minute window average for that metric, or `n/a` if unavailable
-- Do not merge multiple deployments into one table
+- Do NOT change the row order. Use exactly: `ttft`, `tpot`, `qps`, `throughput`, `gpu_utilization`, `error_rate`.
+- Do NOT put anything other than the current 5-minute window average in `Current Values`.
+- Do NOT put anything other than the previous 5-minute window average, or `n/a` when unavailable, in `Prior Values`.
+- Do NOT merge multiple deployments into one table.
 
 ### Table 2
 
@@ -143,19 +138,18 @@ Columns:
 | Anomaly ID/Name | Metric | Severity | Observation |
 
 Rules:
-- Include one row per anomaly submitted or ready to submit for that deployment
-- `Anomaly ID/Name` should be a stable label for the current cycle; if the tool returns event/task ids, use them
-- `Metric` is the triggering metric
-- `Severity` must be `low`, `medium`, or `high`
-- `Observation` should be a short factual explanation, for example `TTFT rising 180% with flat QPS`
-- If no anomalies are detected for that deployment, still print Table 2 with a single row:
-  `none | - | - | no anomalies detected`
+- Do NOT omit anomalies that were submitted or are ready to submit for that deployment. Include one row per anomaly.
+- Do NOT use an unstable `Anomaly ID/Name`. Use a stable label for the current cycle, and use event or task ids when the tool returns them.
+- Do NOT put anything other than the triggering metric in the `Metric` column.
+- Do NOT use any severity other than `low`, `medium`, or `high`.
+- Do NOT write narrative paragraphs in `Observation`. Use a short factual explanation, for example `TTFT rising 180% with flat QPS`.
+- Do NOT leave Table 2 empty when there are no anomalies. Print a single row: `none | - | - | no anomalies detected`.
 
 ### No-Data Case
 
 If no deployments return any usable metrics data in the window:
-- Do not fabricate deployment tables
-- Output `Monitoring Cycle Results` followed by a short note that no deployment metrics were available in the current window
+- Do NOT fabricate deployment tables.
+- Do NOT output anything other than `Monitoring Cycle Results` followed by a short note that no deployment metrics were available in the current window.
 
 ## Output Format
 

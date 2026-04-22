@@ -4,6 +4,7 @@ import path from 'path';
 import os from 'os';
 import { v4 as uuidv4 } from 'uuid';
 
+import { PlannerMemoryStore } from '../planner-memory-store.js';
 import { TaskStatusRecorder } from '../task-status-recorder.js';
 import { PlannerTrigger } from '../planner-trigger.js';
 import { ComponentRegistry } from '../component-registry.js';
@@ -175,6 +176,80 @@ describe('PlannerTrigger completion semantics', () => {
     expect(status?.counters.triggersSucceeded).toBe(1);
     expect(status?.counters.triggersFailed).toBe(1);
     expect(status?.errors.lastError).toContain('planner offline');
+
+    await fs.rm(tmpDir, { recursive: true, force: true });
+  });
+
+  it('attaches recent planner memory context for the same deployment when available', async () => {
+    const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'pimclaw-planner-trigger-'));
+    const recorder = new TaskStatusRecorder(tmpDir);
+    const memoryStore = new PlannerMemoryStore(tmpDir);
+    await recorder.initialize();
+    await memoryStore.load();
+
+    memoryStore.upsertEpisode({
+      version: 1,
+      episodeId: 'episode-1',
+      taskId: 'task-history-1',
+      deploymentName: 'minimax-m25-tp8ep',
+      taskType: 'scale-up',
+      taskStatus: 'done',
+      taskCreatedAt: new Date(),
+      taskConfigSummary: 'replicas=2',
+      anomalySummary: {
+        metrics: ['ttft'],
+        severities: ['high'],
+        synopsis: 'TTFT spike',
+      },
+      outcomeClass: 'successful-improvement',
+      memoryTags: ['recent-success'],
+    });
+    memoryStore.upsertLesson({
+      version: 1,
+      lessonId: 'lesson-1',
+      deploymentScope: { deploymentName: 'minimax-m25-tp8ep' },
+      pattern: 'recent scale-up improved performance',
+      advice: 'Prefer the smallest conservative scale-up when evidence supports it.',
+      confidence: 'medium',
+      supportingTaskIds: ['task-history-1'],
+      supportingEpisodeIds: ['episode-1'],
+      contradictedBy: [],
+      lastValidatedAt: new Date(),
+      expiresAt: new Date(Date.now() + 60_000),
+      status: 'active',
+    });
+    await memoryStore.flush();
+
+    const taskId = uuidv4();
+    await recorder.createTask(createPlanningTask(taskId));
+
+    let capturedAttachments: Array<{ type: string; content: string }> = [];
+    const trigger = new PlannerTrigger({
+      triggerAgent: async (_agentId, options) => {
+        capturedAttachments = options.attachments ?? [];
+        await recorder.updateTaskStatus(taskId, 'ready');
+      },
+    }, recorder, { timeoutSeconds: 1 }, undefined, memoryStore);
+
+    await trigger.trigger([
+      {
+        type: 'spike',
+        metricName: 'tpot',
+        currentValue: 0.19,
+        previousValue: 0.099,
+        severity: 'medium',
+        deploymentName: 'minimax-m25-tp8ep',
+        taskId,
+        eventId: uuidv4(),
+        receivedAt: new Date(),
+      },
+    ], taskId);
+
+    expect(capturedAttachments).toHaveLength(2);
+    const memoryAttachment = JSON.parse(capturedAttachments[1]!.content);
+    expect(memoryAttachment.deploymentName).toBe('minimax-m25-tp8ep');
+    expect(memoryAttachment.recentEpisodes).toHaveLength(1);
+    expect(memoryAttachment.activeLessons).toHaveLength(1);
 
     await fs.rm(tmpDir, { recursive: true, force: true });
   });

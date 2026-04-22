@@ -28,9 +28,11 @@ import { ComponentRegistry } from '../master/component-registry.js';
 import { TaskStatusRecorder } from '../master/task-status-recorder.js';
 import { SchedulerAgent } from '../master/scheduler-agent.js';
 import { PlannerTrigger } from '../master/planner-trigger.js';
+import { PlannerMemoryStore, buildPlannerMemoryEpisodeFromTask } from '../master/planner-memory-store.js';
 import { AnomalyReceiver } from '../master/anomaly-receiver.js';
 import type { AnomalyEvent } from '../master/anomaly-receiver.js';
 import { TaskExecutor } from '../master/task-executor.js';
+import type { Task } from '../types/index.js';
 import type { EngineMcpClient } from '../master/engine-mcp-client.js';
 import {
   PrometheusClient,
@@ -382,4 +384,129 @@ describe('PimClaw v2 full pipeline E2E', () => {
     // Clean up
     await scheduler.shutdown();
   }, 10_000);
+
+  it('attaches prior task feedback memory while the new plan still carries perf and simulation evidence', async () => {
+    const plannerMemoryStore = new PlannerMemoryStore(tmpDir);
+    await plannerMemoryStore.load();
+
+    const priorTaskId = uuidv4();
+    const priorTask: Task = {
+      taskId: priorTaskId,
+      status: 'done' as const,
+      createdAt: new Date('2026-04-22T00:00:00.000Z'),
+      statusModifiedAt: new Date('2026-04-22T00:10:00.000Z'),
+      priority: 'high' as const,
+      llmDeploymentName: 'minimax-m2-1-prod',
+      taskType: 'scale-up',
+      taskData: {
+        events: [
+          {
+            eventId: 'prior-event-1',
+            metricName: 'ttft',
+            severity: 'high',
+          },
+        ],
+      },
+      config: { replicaDelta: 1, replicas: 3 },
+      reasoning: 'Previous scale-up used as a conservative mitigation.',
+      perfEvidence: 'Historical perf showed TTFT improvement with one more replica.',
+      simulationResults: 'Simulation predicted TTFT reduction under the same load band.',
+      retryCount: 0,
+      maxRetries: 3,
+      completedAt: new Date('2026-04-22T00:10:00.000Z'),
+      result: { success: true, after: { replicas: 3 } },
+      feedback: {
+        version: 1,
+        statusSummary: 'completed-successfully' as const,
+        outcome: 'helped' as const,
+        source: 'system' as const,
+        generatedAt: new Date('2026-04-22T00:11:00.000Z'),
+        summary: 'Previous scale-up improved the deployment outcome.',
+      },
+    };
+
+    await recorder.createTask(priorTask);
+    plannerMemoryStore.upsertEpisode(buildPlannerMemoryEpisodeFromTask(priorTask));
+    await plannerMemoryStore.flush();
+
+    let capturedTaskText = '';
+    let capturedAttachments: Array<{ type: string; content: string }> = [];
+    const mockPlannerApi = {
+      triggerAgent: vi.fn(async (_agentId: string, options: any) => {
+        capturedTaskText = options.task;
+        capturedAttachments = options.attachments ?? [];
+
+        const payload = JSON.parse(capturedAttachments[0]?.content ?? '{}');
+        const task = recorder.getTask(payload.taskId)!;
+        task.taskType = 'scale-up';
+        task.config = {
+          replicas: 4,
+          replicaDelta: 1,
+          dtype: 'bf16',
+          tensorParallelism: 8,
+        };
+        task.reasoning =
+          'Recent planner memory shows a prior scale-up helped this deployment. ' +
+          'Historical perf and fresh simulation evidence still support scaling by one replica.';
+        task.perfEvidence = JSON.stringify({
+          rows: [
+            {
+              model_name: 'MiniMax-M2.1',
+              engine_name: 'sglang',
+              ttft: 0.11,
+              qps: 16,
+            },
+          ],
+        });
+        task.simulationResults = JSON.stringify({
+          mean_ttft_ms: 90,
+          mean_tpot_ms: 18,
+          output_throughput: 1200,
+          request_throughput: 30,
+        });
+        await recorder.updateTaskStatus(payload.taskId, 'ready');
+      }),
+    };
+
+    const plannerTrigger = new PlannerTrigger(mockPlannerApi as any, recorder, {
+      agentId: 'pimclaw-planner',
+      timeoutSeconds: 2,
+      workspaceDir: path.join(tmpDir, 'planner-workspace'),
+    }, registry, plannerMemoryStore);
+    const anomalyReceiver = new AnomalyReceiver(recorder, plannerTrigger);
+
+    const validatedEvents = await anomalyReceiver.receive([
+      {
+        type: 'spike',
+        metricName: 'ttft',
+        currentValue: 0.52,
+        previousValue: 0.18,
+        severity: 'high',
+        deploymentName: 'minimax-m2-1-prod',
+        reasoning: 'TTFT is spiking again for the same deployment.',
+      },
+    ]);
+
+    expect(validatedEvents).toHaveLength(1);
+
+    await vi.waitFor(() => {
+      expect(mockPlannerApi.triggerAgent).toHaveBeenCalledTimes(1);
+    });
+
+    expect(capturedTaskText).toContain('Recent planner memory is attached separately');
+    expect(capturedAttachments).toHaveLength(2);
+
+    const memoryContext = JSON.parse(capturedAttachments[1]!.content);
+    expect(memoryContext.deploymentName).toBe('minimax-m2-1-prod');
+    expect(memoryContext.recentEpisodes).toHaveLength(1);
+    expect(memoryContext.recentEpisodes[0].taskId).toBe(priorTaskId);
+    expect(memoryContext.recentEpisodes[0].feedback.outcome).toBe('helped');
+
+    const newTaskId = validatedEvents[0]!.taskId;
+    const plannedTask = recorder.getTask(newTaskId)!;
+    expect(plannedTask.status).toBe('ready');
+    expect(plannedTask.reasoning).toContain('Historical perf');
+    expect(plannedTask.perfEvidence).toContain('MiniMax-M2.1');
+    expect(plannedTask.simulationResults).toContain('mean_ttft_ms');
+  });
 });

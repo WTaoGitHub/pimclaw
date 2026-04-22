@@ -5,6 +5,7 @@
 
 import { BaseAgent } from './base-agent.js';
 import { ComponentRegistry } from './component-registry.js';
+import { PlannerMemoryStore } from './planner-memory-store.js';
 import { TaskStatusRecorder } from './task-status-recorder.js';
 import { WorkerAgent } from './worker-agent.js';
 import { TaskExecutor } from './task-executor.js';
@@ -26,6 +27,7 @@ export class SchedulerAgent extends BaseAgent {
   private pollingIntervalMs: number = 5000; // poll every 5 seconds
   private isRunning: boolean = false;
   private taskExecutor: TaskExecutor | null = null;
+  private readonly plannerMemoryStore: PlannerMemoryStore | null;
   private readonly logger: PluginLogger | null;
 
   constructor(
@@ -33,6 +35,7 @@ export class SchedulerAgent extends BaseAgent {
     taskRecorder: TaskStatusRecorder,
     maxWorkers?: number,
     taskExecutor?: TaskExecutor,
+    plannerMemoryStore?: PlannerMemoryStore,
     logger?: PluginLogger,
   ) {
     super('scheduler', registry, {
@@ -44,6 +47,7 @@ export class SchedulerAgent extends BaseAgent {
       this.maxConcurrentWorkers = maxWorkers;
     }
     this.taskExecutor = taskExecutor ?? null;
+    this.plannerMemoryStore = plannerMemoryStore ?? null;
     this.logger = logger ?? null;
   }
 
@@ -144,7 +148,14 @@ export class SchedulerAgent extends BaseAgent {
       this.updateAction(`Scheduling task ${task.taskId}`);
 
       // Create and track a Worker Agent
-      const worker = new WorkerAgent(this.registry, this.taskRecorder, task, this.taskExecutor ?? undefined, this.logger ?? undefined);
+      const worker = new WorkerAgent(
+        this.registry,
+        this.taskRecorder,
+        task,
+        this.taskExecutor ?? undefined,
+        this.plannerMemoryStore ?? undefined,
+        this.logger ?? undefined,
+      );
       this.workers.set(task.taskId, worker);
 
       // Initialize worker (registers in registry, attempts MCP connections)

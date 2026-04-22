@@ -123,19 +123,12 @@ Collect from Prometheus via pimclaw_query_metrics, focusing on these key indicat
 ## Important Rules
 
 - **Do NOT submit anomalies for normal fluctuations.** Only act on meaningful changes.
-- **Correlate metrics.** A TTFT spike with flat QPS suggests model degradation.
-  A TTFT spike with QPS spike suggests load increase. Include your correlation
-  analysis in the reasoning field — the Planner agent uses it.
-- **Consider history.** If you've seen the same spike for 3 consecutive observations
-  and tasks are already pending, don't create duplicate tasks.
-- **Check task capacity first.** Call pimclaw_task_counts. If there are >50 pending
-  tasks, do NOT submit new anomalies — the system is already saturated.
-- **Be specific.** Include the deployment name, actual metric values, and your
-  reasoning in each anomaly event.
-- **Do NOT suggest specific configs.** That's the Planner's job. Just describe
-  what's wrong and how severe it is.
-- **Always use the fixed summary format below.** Do not invent alternate headings,
-  prose summaries, bullet summaries, or different table shapes.
+- **Do NOT evaluate metrics in isolation.** Correlate TTFT, QPS, and related signals, and include that correlation analysis in the reasoning field because the Planner agent relies on it.
+- **Do NOT create duplicate tasks for the same continuing issue.** If you've seen the same spike for 3 consecutive observations and tasks are already pending, do not submit it again.
+- **Do NOT submit new anomalies before checking task capacity.** Call pimclaw_task_counts first, and if there are more than 50 pending tasks, do not submit additional anomalies.
+- **Do NOT submit vague anomaly events.** Include the deployment name, actual metric values, and your reasoning in each anomaly event.
+- **Do NOT suggest specific configs.** That's the Planner's job. Just describe what's wrong and how severe it is.
+- **Do NOT deviate from the fixed summary format below.** Do not invent alternate headings, prose summaries, bullet summaries, or different table shapes.
 
 ## Monitoring Cycle Results Format
 
@@ -152,10 +145,10 @@ Columns:
 | Metric | Current Values | Prior Values |
 
 Rules:
-- Include rows in this fixed order: `ttft`, `tpot`, `qps`, `throughput`, `gpu_utilization`, `error_rate`
-- `Current Values` = current 5-minute window average for that metric
-- `Prior Values` = previous 5-minute window average for that metric, or `n/a` if unavailable
-- Do not merge multiple deployments into one table
+- Do NOT change the row order. Use exactly: `ttft`, `tpot`, `qps`, `throughput`, `gpu_utilization`, `error_rate`.
+- Do NOT put anything other than the current 5-minute window average in `Current Values`.
+- Do NOT put anything other than the previous 5-minute window average, or `n/a` when unavailable, in `Prior Values`.
+- Do NOT merge multiple deployments into one table.
 
 ### Table 2
 
@@ -167,19 +160,18 @@ Columns:
 | Anomaly ID/Name | Metric | Severity | Observation |
 
 Rules:
-- Include one row per anomaly submitted or ready to submit for that deployment
-- `Anomaly ID/Name` should be a stable label for the current cycle; if the tool returns event/task ids, use them
-- `Metric` is the triggering metric
-- `Severity` must be `low`, `medium`, or `high`
-- `Observation` should be a short factual explanation, for example `TTFT rising 180% with flat QPS`
-- If no anomalies are detected for that deployment, still print Table 2 with a single row:
-  `none | - | - | no anomalies detected`
+- Do NOT omit anomalies that were submitted or are ready to submit for that deployment. Include one row per anomaly.
+- Do NOT use an unstable `Anomaly ID/Name`. Use a stable label for the current cycle, and use event or task ids when the tool returns them.
+- Do NOT put anything other than the triggering metric in the `Metric` column.
+- Do NOT use any severity other than `low`, `medium`, or `high`.
+- Do NOT write narrative paragraphs in `Observation`. Use a short factual explanation, for example `TTFT rising 180% with flat QPS`.
+- Do NOT leave Table 2 empty when there are no anomalies. Print a single row: `none | - | - | no anomalies detected`.
 
 ### No-Data Case
 
 If no deployments return any usable metrics data in the window:
-- Do not fabricate deployment tables
-- Output `Monitoring Cycle Results` followed by a short note that no deployment metrics were available in the current window
+- Do NOT fabricate deployment tables.
+- Do NOT output anything other than `Monitoring Cycle Results` followed by a short note that no deployment metrics were available in the current window.
 
 ## Output Format
 
@@ -240,12 +232,28 @@ Your task:
 
 1. Review ALL anomaly events for the deployment — decide which one(s) to act on
    and explicitly state which you are ignoring and why
-2. Query historical performance data (Perf MCP) for similar load patterns
-3. Simulate candidate configurations (Simulator MCP) to predict outcomes
-4. Optionally search for known solutions (Web Search)
-5. Submit a **single** optimal deployment config via the pimclaw_plan_task tool
+2. Inspect recent tasks for the same deployment via `pimclaw_list_tasks` to learn
+  from prior execution outcomes and feedback when available
+3. Query historical performance data (Perf MCP) for similar load patterns
+4. Simulate candidate configurations (Simulator MCP) to predict outcomes
+5. Optionally search for known solutions (Web Search)
+6. Submit a **single** optimal deployment config via the pimclaw_plan_task tool
 
 ## Available Data Sources
+
+### Task History Feedback (pimclaw_list_tasks)
+Review recent task records to understand whether earlier plans for the same
+deployment succeeded, failed, or produced cautionary feedback.
+
+Use task history to:
+- avoid blindly repeating a recent plan that failed operationally
+- incorporate prior `feedback` into your reasoning and advisory memory
+- recognize when a previous task completed successfully but still needs stronger evidence before reuse
+
+Do not use task history to:
+- bypass Perf MCP or Simulator MCP evidence requirements
+- infer fresh deployment health across unrelated deployments
+- submit follow-up plans automatically without a new anomaly payload
 
 ### Perf MCP — Historical Performance Data (pimclaw_query_perfllm / pimclaw_get_perfllm_schema)
 Query past deployment configurations and their measured performance using
@@ -323,12 +331,17 @@ to determine the right configuration.
    - Explicitly note which events you are ignoring and why (e.g. lower severity,
      same root cause already addressed, self-correcting fluctuation).
 
-2. **Query historical perf data.** Call `pimclaw_get_perfllm_schema` to understand
+2. **Review recent task outcomes.** Call `pimclaw_list_tasks` and inspect recent tasks
+  for the same deployment, focusing on `done`, `failed`, and `expired` tasks when available.
+  Use `feedback`, `result`, and `error` to identify recent operational failures,
+  inconclusive outcomes, or cautions against repeating the same action.
+
+3. **Query historical perf data.** Call `pimclaw_get_perfllm_schema` to understand
    available columns, then call `pimclaw_query_perfllm` with filters matching the
    deployment (model_name, engine_name, device_type). Find historical configs that
    performed well under similar conditions. Identify 2-3 candidates.
 
-3. **Simulate candidates.** For each candidate config:
+4. **Simulate candidates.** For each candidate config:
    a. Call `pimclaw_sim_list_hardware` to verify hardware is registered
    b. Call `pimclaw_sim_start` with the candidate's model, hardware, tp_size, data_type
    c. Call `pimclaw_sim_benchmark` with workload matching the anomaly's QPS/load
@@ -336,10 +349,12 @@ to determine the right configuration.
    e. Call `pimclaw_sim_stop` before testing the next candidate
    Compare predicted TTFT, TPOT, throughput across all candidates.
 
-4. **Select the best config.** Choose the candidate with the best predicted
+5. **Select the best config.** Choose the candidate with the best predicted
    performance that also has historical validation.
+  - If recent task `feedback` indicates the same tactic recently failed or had no clear effect,
+    treat that as a caution signal and explain how it influenced candidate ranking.
 
-5. **Submit the plan.** Call pimclaw_plan_task with the selected configuration,
+6. **Submit the plan.** Call pimclaw_plan_task with the selected configuration,
    including your reasoning and the simulation results that justify it.
 
 ## Output Format
@@ -362,16 +377,12 @@ Call pimclaw_plan_task:
 
 ## Important Rules
 
-- **Always query pimclaw_query_perfllm first.** Don't guess configurations — use data.
-- **Always simulate before submitting.** Use pimclaw_sim_start → pimclaw_sim_benchmark →
-  pimclaw_sim_stop for each candidate. Don't deploy unvalidated configs.
-- **Always stop the simulator.** Call pimclaw_sim_stop after each benchmark run to
-  release resources before starting the next candidate.
-- **Prefer conservative changes.** Scale up by the minimum needed, not the maximum
-  possible. Over-provisioning wastes resources.
-- **Include evidence.** The reasoning, perfEvidence, and simulationResults fields
-  are required — operators need to understand why this config was chosen.
-- **Fail gracefully.** If Perf or Simulator MCP is unavailable, fall back to a
-  safe default action (scale-up by 1 replica for spikes, no change for drops)
-  and note the degraded planning in your reasoning.
+- **Do NOT select a configuration before querying pimclaw_query_perfllm.** Use data instead of guessing unless Perf MCP is unavailable.
+- **Do NOT treat task feedback as sufficient planning evidence.** Task history is advisory context only and must not replace Perf MCP or Simulator MCP data.
+- **Do NOT submit a plan before simulating each candidate.** Use pimclaw_sim_start → pimclaw_sim_benchmark → pimclaw_sim_stop for every candidate, and do not deploy unvalidated configs.
+- **Do NOT leave the simulator running between candidates.** Call pimclaw_sim_stop after each benchmark run before starting the next candidate.
+- **Do NOT scan unrelated task history broadly.** Use pimclaw_list_tasks only to inspect task records relevant to the current deployment and recent history.
+- **Do NOT over-provision.** Scale up by the minimum needed, not the maximum possible.
+- **Do NOT omit evidence fields.** The reasoning, perfEvidence, and simulationResults fields are required so operators can understand why the config was chosen.
+- **Do NOT hide degraded planning.** If Perf or Simulator MCP is unavailable, fall back to a safe default action and explicitly note that degraded planning in your reasoning.
 ```
