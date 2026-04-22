@@ -56,8 +56,20 @@ import type { PerfMcpConfig } from './master/perf-mcp-client.js';
 import { SimMcpClient } from './master/sim-mcp-client.js';
 import type { SimMcpConfig } from './master/sim-mcp-client.js';
 import { TaskExecutor } from './master/task-executor.js';
-import { PlannerMemoryStore } from './master/planner-memory-store.js';
-import type { Task } from './types/index.js';
+import { buildPlannerMemoryEpisodeFromTask, PlannerMemoryStore } from './master/planner-memory-store.js';
+import {
+  DEFAULT_HEAD_FEEDBACK_SETTLING_DELAY_MS,
+  DEFAULT_HEAD_FEEDBACK_VALIDITY_MS,
+  buildHeadTaskFeedbackRow,
+  deriveHeadFollowupOutcome,
+  getHeadTaskFeedbackReviewState,
+} from './master/head-task-feedback.js';
+import type {
+  Task,
+  TaskFeedback,
+  TaskFeedbackMetricAssessment,
+  TaskFeedbackStatusSummary,
+} from './types/index.js';
 import { v4 as uuidv4 } from 'uuid';
 import { selectPlannerAgentApi } from './master/planner-launch.js';
 
@@ -155,6 +167,8 @@ let pluginRuntime: unknown = null;
 let plannerFallbackTaskType: 'scale-up' | 'scale-down' | 'restart' | 'reconfigure' = 'scale-up';
 let plannerFallbackConfig: Record<string, unknown> = { replicaDelta: 1 };
 let planningTimeoutMs = 600_000;
+let headFeedbackSettlingDelayMs = DEFAULT_HEAD_FEEDBACK_SETTLING_DELAY_MS;
+let headFeedbackValidityMs = DEFAULT_HEAD_FEEDBACK_VALIDITY_MS;
 let pluginLogger: OpenClawPluginServiceContext['logger'] | null = null;
 let fileLogger: FileLogger | null = null;
 const planningFallbackTimers: Map<string, ReturnType<typeof setTimeout>> = new Map();
@@ -280,6 +294,7 @@ function buildHeadSummaryRecord(
     runId,
     sessionId,
     deployments,
+    taskFeedbackTable: [],
   };
 }
 
@@ -541,6 +556,50 @@ function createCliPlannerAgentApi(ctx: OpenClawPluginServiceContext): OpenClawAg
   };
 }
 
+async function syncPlannerMemoryFromTask(taskId: string): Promise<void> {
+  if (!plannerMemoryStore || !taskRecorder) {
+    return;
+  }
+
+  const task = taskRecorder.getTask(taskId);
+  if (!task) {
+    return;
+  }
+
+  plannerMemoryStore.upsertEpisode(buildPlannerMemoryEpisodeFromTask(task));
+  await plannerMemoryStore.flush();
+}
+
+function upsertTaskFeedbackSummaryRow(
+  sessionId: string,
+  row: ReturnType<typeof buildHeadTaskFeedbackRow>,
+): void {
+  if (!headSummaryStore) {
+    return;
+  }
+
+  const runId = currentHeadRunIds.get(sessionId);
+  if (!runId) {
+    return;
+  }
+
+  const summary = headSummaryStore.getByRunId(runId);
+  if (!summary) {
+    return;
+  }
+
+  summary.taskFeedbackTable ??= [];
+  const existingIndex = summary.taskFeedbackTable.findIndex((item) => item.taskId === row.taskId);
+  if (existingIndex >= 0) {
+    summary.taskFeedbackTable[existingIndex] = row;
+  } else {
+    summary.taskFeedbackTable.push(row);
+  }
+
+  headSummaryStore.upsert(summary);
+  headSummaryStore.flush().catch(() => {});
+}
+
 function clearPlanningFallback(taskId: string): void {
   const timer = planningFallbackTimers.get(taskId);
   if (timer) {
@@ -573,7 +632,6 @@ async function applyFallbackPlan(taskId: string, reason: string): Promise<boolea
   task.simulationResults = 'No simulation available in fallback mode';
 
   await taskRecorder.updateTaskStatus(taskId, 'ready');
-  clearPlanningFallback(taskId);
   pluginLogger?.warn(`[PimClaw] Applied fallback plan to task ${taskId}: ${reason}`);
 
   return true;
@@ -611,6 +669,9 @@ function createPimClawService(): OpenClawPluginService {
       pluginLogger = fileLogger;
 
       const config = getPluginConfig(ctx);
+      const headFeedbackConfig = (config as any)?.headFeedback ?? {};
+      headFeedbackSettlingDelayMs = headFeedbackConfig.settlingDelayMs ?? DEFAULT_HEAD_FEEDBACK_SETTLING_DELAY_MS;
+      headFeedbackValidityMs = headFeedbackConfig.feedbackValidityMs ?? DEFAULT_HEAD_FEEDBACK_VALIDITY_MS;
 
       // 1. Shared infrastructure
       registry = new ComponentRegistry();
@@ -657,6 +718,9 @@ function createPimClawService(): OpenClawPluginService {
 
       ctx.logger.info(
         `[PimClaw] Dedicated agent workspaces ready: head=${headWorkspaceDir}, planner=${plannerWorkspaceDir}`,
+      );
+      ctx.logger.info(
+        `[PimClaw] Head feedback review window configured: settle=${headFeedbackSettlingDelayMs}ms validity=${headFeedbackValidityMs}ms`,
       );
 
       // 3. AnomalyReceiver — validates events from LLM Head, triggers Planner
@@ -837,6 +901,8 @@ function createPimClawService(): OpenClawPluginService {
       prometheusQueryOverrides = {};
       prometheusDefaultLabels = {};
       activeEngines = [...ALL_ENGINES];
+      headFeedbackSettlingDelayMs = DEFAULT_HEAD_FEEDBACK_SETTLING_DELAY_MS;
+      headFeedbackValidityMs = DEFAULT_HEAD_FEEDBACK_VALIDITY_MS;
       pluginConfig = {};
       pluginRuntime = null;
       if (fileLogger) {
@@ -1060,6 +1126,137 @@ function buildPimClawTools() {
           }),
         };
       }
+    },
+  });
+
+  const submitTaskFeedbackTool = () => ({
+    name: 'pimclaw_submit_task_feedback',
+    description:
+      'Submit Head follow-up feedback for a completed task after reviewing fresh runtime metrics within the valid review window.',
+    parameters: {
+      type: 'object' as const,
+      properties: {
+        taskId: { type: 'string', description: 'Completed task ID to review' },
+        outcome: {
+          type: 'string',
+          enum: ['helped', 'no-effect', 'worsened', 'unknown'],
+          description: 'Final Head follow-up outcome',
+        },
+        statusSummary: {
+          type: 'string',
+          enum: ['pending-review', 'completed-successfully', 'completed-with-errors', 'execution-failed', 'timed-out', 'expired', 'unknown'],
+          description: 'High-level review status summary',
+        },
+        summary: { type: 'string', description: 'Short factual review summary' },
+        metricAssessments: {
+          type: 'array',
+          description: 'Per-metric follow-up assessments based on fresh runtime observations',
+          items: {
+            type: 'object',
+            properties: {
+              metricName: { type: 'string', enum: ['ttft', 'tpot', 'qps', 'throughput', 'gpu_utilization', 'error_rate'] },
+              direction: { type: 'string', enum: ['improved', 'regressed', 'unchanged', 'unknown'] },
+              previousValue: { type: 'number' },
+              currentValue: { type: 'number' },
+              delta: { type: 'number' },
+              percentChange: { type: 'number' },
+              note: { type: 'string' },
+            },
+            required: ['metricName', 'direction'],
+          },
+        },
+        reviewerNotes: { type: 'string', description: 'Optional extra notes from the Head agent' },
+      },
+      required: ['taskId', 'outcome', 'statusSummary', 'summary'],
+    },
+    async execute(sessionId: string, params: Record<string, unknown>) {
+      if (!taskRecorder) {
+        return { output: JSON.stringify({ error: 'PimClaw service not running' }) };
+      }
+
+      const taskId = params.taskId as string;
+      const task = taskRecorder.getTask(taskId);
+      if (!task) {
+        return { output: JSON.stringify({ error: `Task ${taskId} not found` }) };
+      }
+
+      const now = new Date();
+      const metricAssessments = (params.metricAssessments as TaskFeedbackMetricAssessment[] | undefined) ?? [];
+      const rawReviewState = getHeadTaskFeedbackReviewState(
+        task,
+        now,
+        headFeedbackSettlingDelayMs,
+        headFeedbackValidityMs,
+      );
+      const reviewState = rawReviewState === 'ineligible' ? 'rejected' : rawReviewState;
+
+      if (reviewState !== 'eligible') {
+        upsertTaskFeedbackSummaryRow(
+          sessionId,
+          buildHeadTaskFeedbackRow(
+            task,
+            reviewState,
+            params.summary as string,
+            metricAssessments,
+            null,
+          ),
+        );
+        return {
+          output: JSON.stringify({
+            success: false,
+            taskId,
+            feedbackSource: 'head-followup',
+            reviewState,
+            generatedAt: now.toISOString(),
+          }),
+        };
+      }
+
+      const details: TaskFeedback['details'] = {};
+      if (metricAssessments.length > 0) {
+        details.metricAssessments = metricAssessments;
+      }
+      if (typeof params.reviewerNotes === 'string' && params.reviewerNotes.trim()) {
+        details.reviewerNotes = params.reviewerNotes;
+      }
+
+      const fallbackOutcome = params.outcome as 'helped' | 'no-effect' | 'worsened' | 'unknown';
+      const outcome = deriveHeadFollowupOutcome(metricAssessments, fallbackOutcome);
+
+      const feedback: TaskFeedback = {
+        version: 1,
+        statusSummary: params.statusSummary as TaskFeedbackStatusSummary,
+        outcome,
+        source: 'head-followup',
+        generatedAt: now,
+        summary: params.summary as string,
+        details: Object.keys(details).length > 0 ? details : undefined,
+      };
+
+      await taskRecorder.updateTaskFeedback(taskId, feedback);
+      await syncPlannerMemoryFromTask(taskId);
+
+      const latestTask = taskRecorder.getTask(taskId) ?? task;
+      upsertTaskFeedbackSummaryRow(
+        sessionId,
+        buildHeadTaskFeedbackRow(
+          latestTask,
+          'applied',
+          feedback.summary,
+          metricAssessments,
+          outcome,
+        ),
+      );
+
+      return {
+        output: JSON.stringify({
+          success: true,
+          taskId,
+          feedbackSource: 'head-followup',
+          reviewState: 'applied',
+          generatedAt: now.toISOString(),
+        }),
+      };
     },
   });
 
@@ -1573,6 +1770,7 @@ function buildPimClawTools() {
 
   return [
     submitAnomaliesTool,
+    submitTaskFeedbackTool,
     planTaskTool,
     routeTaskTool,
     queryMetricsTool,

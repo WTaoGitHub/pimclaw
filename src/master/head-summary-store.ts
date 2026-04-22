@@ -22,6 +22,23 @@ export interface HeadMonitoringAnomalyRow {
   observation: string;
 }
 
+export type HeadTaskFeedbackReviewState =
+  | 'applied'
+  | 'too-early'
+  | 'expired-for-review'
+  | 'already-reviewed'
+  | 'rejected';
+
+export interface HeadTaskFeedbackRow {
+  taskId: string;
+  deploymentName: string;
+  taskType: string;
+  reviewState: HeadTaskFeedbackReviewState;
+  outcome: 'helped' | 'no-effect' | 'worsened' | 'unknown' | null;
+  keyMetrics: string;
+  observation: string;
+}
+
 export interface HeadMonitoringDeploymentSummary {
   deploymentName: string;
   engine: string;
@@ -34,6 +51,7 @@ export interface HeadMonitoringSummaryRecord {
   runId: string;
   sessionId: string;
   deployments: HeadMonitoringDeploymentSummary[];
+  taskFeedbackTable: HeadTaskFeedbackRow[];
 }
 
 export class HeadSummaryStore {

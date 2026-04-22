@@ -37,6 +37,7 @@ describe('HeadSummaryStore', () => {
           anomalyTable: [],
         },
       ],
+      taskFeedbackTable: [],
     };
   }
 
@@ -60,5 +61,26 @@ describe('HeadSummaryStore', () => {
     expect(store.getByRunId('run-1')).toBeNull();
     expect(store.getByRunId('run-2')).not.toBeNull();
     expect(store.getByRunId('run-3')).not.toBeNull();
+  });
+
+  it('persists cycle-level task feedback rows alongside deployment summaries', async () => {
+    const record = makeRecord('run-1', 0.25);
+    record.taskFeedbackTable.push({
+      taskId: 'task-1',
+      deploymentName: 'minimax-m25-tp8ep',
+      taskType: 'scale-up',
+      reviewState: 'applied',
+      outcome: 'helped',
+      keyMetrics: 'ttft improved, qps unchanged',
+      observation: 'TTFT down 42% versus trigger window',
+    });
+
+    store.upsert(record);
+    await store.flush();
+
+    const reloadedStore = new HeadSummaryStore(tmpDir, 2);
+    await reloadedStore.load();
+
+    expect(reloadedStore.getByRunId('run-1')?.taskFeedbackTable).toEqual(record.taskFeedbackTable);
   });
 });

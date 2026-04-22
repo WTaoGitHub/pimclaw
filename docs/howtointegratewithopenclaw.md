@@ -10,8 +10,8 @@ When OpenClaw activates the plugin:
    - **Task Status Recorder** — initializes first, recovers persisted tasks and marks stale ones expired (including `planning` tasks >10 min → expired)
    - **AnomalyReceiver** — validates incoming anomaly events from the LLM Head Agent, triggers PlannerTrigger per event
    - **Scheduler** — polls for ready tasks every 5 s, creates Workers (up to 10 concurrent)
-2. **Tools appear** — ten tools become available to every OpenClaw agent session (see table below)
-3. **LLM agents run externally** — the Head Agent (cron `*/5 * * * *`) and Planner Agent (on-demand) run via OpenClaw's agent runtime, not inside the plugin. They interact through two integration gates: `pimclaw_submit_anomalies` and `pimclaw_plan_task`.
+2. **Tools appear** — PimClaw registers its tool surface for every OpenClaw agent session (see table below)
+3. **LLM agents run externally** — the Head Agent (cron `*/5 * * * *`) and Planner Agent (on-demand) run via OpenClaw's agent runtime, not inside the plugin. They interact through three integration gates: `pimclaw_submit_anomalies`, `pimclaw_submit_task_feedback`, and `pimclaw_plan_task`.
 4. **Service stops** — when OpenClaw shuts down, components are stopped in reverse order, fallback timers are cleared, and task state is persisted
 
 All task data is stored in OpenClaw's `stateDir` so it survives restarts. LLM agent sessions are managed by OpenClaw's agent runtime.
@@ -151,6 +151,7 @@ Once the plugin is active, any OpenClaw agent can call these tools:
 | Tool | Purpose | Key Parameters |
 |------|---------|----------------|
 | `pimclaw_submit_anomalies` | Submit detected anomaly events (Head Agent → Plugin) | `events[]` |
+| `pimclaw_submit_task_feedback` | Submit Head follow-up feedback for completed tasks | `taskId`, `statusSummary`, `summary`, `metricAssessments[]` |
 | `pimclaw_plan_task` | Submit deployment config plan (Planner Agent → Plugin) | `taskId`, `taskType`, `config`, `reasoning` |
 | `pimclaw_route_task` | Submit a task directly (bypasses Head/Planner) | `llmDeploymentName`, `taskType`, `priority?`, `taskData?` |
 | `pimclaw_list_components` | List active PimClaw components | `componentType?` |
@@ -185,6 +186,10 @@ Most tasks are created automatically by the LLM Head Agent and planned by the Pl
   → pimclaw_submit_anomalies({ events: [{ type: "spike", metricName: "ttft", ... }] })
   ← { success: true, accepted: 1, tasks: [{ taskId: "x1y2" }] }
 
+[Later Head cron turn] reviews a completed task inside the valid follow-up window
+  → pimclaw_submit_task_feedback({ taskId: "x1y2", statusSummary: "completed-successfully", metricAssessments: [...] })
+  ← { success: true, taskId: "x1y2", reviewState: "applied" }
+
 [Plugin]  creates task in "planning" state → triggers Planner Agent
 
 [LLM Planner Agent]  analyzes via Perf MCP + Simulator MCP
@@ -195,6 +200,30 @@ Most tasks are created automatically by the LLM Head Agent and planned by the Pl
 ```
 
 If the Planner times out or fails, the plugin automatically applies a fallback plan (default: scale-up by 1 replica).
+
+### Head feedback timing knobs
+
+PimClaw accepts an optional `headFeedback` config block to control when Head may review completed tasks:
+
+```json
+{
+  "plugins": [
+    {
+      "id": "pimclaw",
+      "enabled": true,
+      "config": {
+        "headFeedback": {
+          "settlingDelayMs": 900000,
+          "feedbackValidityMs": 3600000
+        }
+      }
+    }
+  ]
+}
+```
+
+- `settlingDelayMs`: minimum delay after `completedAt` before Head follow-up feedback is eligible
+- `feedbackValidityMs`: maximum age after `completedAt` after which Head follow-up feedback is treated as expired for review
 
 On OpenClaw `2026.4.1`, the equivalent flow may be:
 

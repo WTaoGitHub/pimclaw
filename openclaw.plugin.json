@@ -24,6 +24,21 @@
           "fallbackConfig": { "type": "object" }
         }
       },
+      "headFeedback": {
+        "type": "object",
+        "properties": {
+          "settlingDelayMs": {
+            "type": "number",
+            "default": 900000,
+            "description": "Minimum delay after task completion before Head follow-up feedback becomes eligible."
+          },
+          "feedbackValidityMs": {
+            "type": "number",
+            "default": 3600000,
+            "description": "Maximum age after task completion for Head follow-up feedback to remain valid."
+          }
+        }
+      },
       "prometheus": {
         "type": "object",
         "properties": {
@@ -76,6 +91,7 @@
   "contracts": {
     "tools": [
       "pimclaw_submit_anomalies",
+      "pimclaw_submit_task_feedback",
       "pimclaw_plan_task",
       "pimclaw_route_task",
       "pimclaw_list_components",
