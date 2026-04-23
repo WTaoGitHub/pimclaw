@@ -46,6 +46,22 @@ export interface PlannerMemoryContextPayload {
   activeLessons: PlannerMemoryLesson[];
 }
 
+interface PlannerOutputFormatExample {
+  taskId: string;
+  taskType: 'scale-up' | 'scale-down' | 'restart' | 'reconfigure';
+  config: {
+    replicas: number;
+    dtype: 'fp16' | 'bf16' | 'fp8' | 'int8' | 'int4';
+    quantization: string | null;
+    maxBatchSize: number;
+    tensorParallelism: number;
+  };
+  reasoning: string;
+  perfEvidence: string;
+  simulationResults: string;
+  webReferences: string[];
+}
+
 const DEFAULT_CONFIG: PlannerTriggerConfig = {
   agentId: 'pimclaw-planner',
   timeoutSeconds: 600,
@@ -156,6 +172,24 @@ export class PlannerTrigger {
     };
   }
 
+  private buildPlannerOutputFormatExample(taskId: string): PlannerOutputFormatExample {
+    return {
+      taskId,
+      taskType: 'reconfigure',
+      config: {
+        replicas: 2,
+        dtype: 'bf16',
+        quantization: null,
+        maxBatchSize: 32,
+        tensorParallelism: 8,
+      },
+      reasoning: '<why this config was selected>',
+      perfEvidence: '<historical perf evidence from tool output>',
+      simulationResults: '<simulation evidence from tool output>',
+      webReferences: [],
+    };
+  }
+
   async trigger(events: ValidatedEvent[], taskId: string): Promise<void> {
     this.updateCounters({ triggersAttempted: 1 });
     this.registry?.updateAgentAction(this.agentId, 'triggering planner');
@@ -187,6 +221,11 @@ export class PlannerTrigger {
         activeLessonIds: memoryContext.activeLessons.map((lesson) => lesson.lessonId),
       });
     }
+    this.debug('planner expected output format', {
+      taskId,
+      deploymentName: payload.deploymentName,
+      outputFormat: this.buildPlannerOutputFormatExample(taskId),
+    });
     this.debug('calling OpenClaw agent API', {
       agentId: this.config.agentId,
       timeoutSeconds: this.config.timeoutSeconds,

@@ -21,6 +21,7 @@ describe('PimClaw v2 integration', () => {
     const recorder = new TaskStatusRecorder(tmpDir);
     await recorder.initialize();
 
+    const debugLogs: Array<{ message: string; context?: Record<string, unknown> }> = [];
     const triggerCalls: Array<{ taskId: string }> = [];
     const plannerApi = {
       triggerAgent: async (_agentId: string, options: any) => {
@@ -29,12 +30,20 @@ describe('PimClaw v2 integration', () => {
         await new Promise(() => {});
       },
     };
+    const logger = {
+      debug(message: string, context?: Record<string, unknown>) {
+        debugLogs.push({ message, context });
+      },
+      info() {},
+      warn() {},
+      error() {},
+    };
 
     const plannerTrigger = new PlannerTrigger(plannerApi as any, recorder, {
       agentId: 'pimclaw-planner',
       timeoutSeconds: 600,
       workspaceDir: '/tmp/pimclaw-planner-workspace',
-    });
+    }, undefined, undefined, logger as any);
     const anomalyReceiver = new AnomalyReceiver(recorder, plannerTrigger);
 
     const events = [
@@ -57,6 +66,27 @@ describe('PimClaw v2 integration', () => {
     expect(planningTask?.status).toBe('planning');
     expect(triggerCalls).toHaveLength(1);
     expect(triggerCalls[0].taskId).toBe(taskId);
+
+    const outputFormatLog = debugLogs.find((entry) =>
+      entry.message.includes('planner expected output format'));
+    expect(outputFormatLog).toBeDefined();
+    expect(outputFormatLog?.context?.taskId).toBe(taskId);
+    expect(outputFormatLog?.context?.deploymentName).toBe('llama-70b-prod');
+    expect(outputFormatLog?.context?.outputFormat).toEqual({
+      taskId,
+      taskType: 'reconfigure',
+      config: {
+        replicas: 2,
+        dtype: 'bf16',
+        quantization: null,
+        maxBatchSize: 32,
+        tensorParallelism: 8,
+      },
+      reasoning: '<why this config was selected>',
+      perfEvidence: '<historical perf evidence from tool output>',
+      simulationResults: '<simulation evidence from tool output>',
+      webReferences: [],
+    });
 
     planningTask!.taskType = 'scale-up';
     planningTask!.config = { replicas: 3, dtype: 'fp16' };
