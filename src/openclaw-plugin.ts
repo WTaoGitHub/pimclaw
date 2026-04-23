@@ -558,16 +558,28 @@ function createCliPlannerAgentApi(ctx: OpenClawPluginServiceContext): OpenClawAg
 
 async function syncPlannerMemoryFromTask(taskId: string): Promise<void> {
   if (!plannerMemoryStore || !taskRecorder) {
+    pluginLogger?.debug(`[HeadFeedback] skipped planner memory sync`, {
+      taskId,
+      hasPlannerMemoryStore: Boolean(plannerMemoryStore),
+      hasTaskRecorder: Boolean(taskRecorder),
+    });
     return;
   }
 
   const task = taskRecorder.getTask(taskId);
   if (!task) {
+    pluginLogger?.debug(`[HeadFeedback] skipped planner memory sync because task was not found`, { taskId });
     return;
   }
 
   plannerMemoryStore.upsertEpisode(buildPlannerMemoryEpisodeFromTask(task));
   await plannerMemoryStore.flush();
+  pluginLogger?.debug(`[HeadFeedback] planner memory synced from reviewed task`, {
+    taskId,
+    deploymentName: task.llmDeploymentName,
+    feedbackSource: task.feedback?.source ?? null,
+    feedbackOutcome: task.feedback?.outcome ?? null,
+  });
 }
 
 function upsertTaskFeedbackSummaryRow(
@@ -575,16 +587,29 @@ function upsertTaskFeedbackSummaryRow(
   row: ReturnType<typeof buildHeadTaskFeedbackRow>,
 ): void {
   if (!headSummaryStore) {
+    pluginLogger?.debug(`[HeadFeedback] skipped summary row upsert because HeadSummaryStore is unavailable`, {
+      sessionId,
+      taskId: row.taskId,
+    });
     return;
   }
 
   const runId = currentHeadRunIds.get(sessionId);
   if (!runId) {
+    pluginLogger?.debug(`[HeadFeedback] skipped summary row upsert because no Head run is active for session`, {
+      sessionId,
+      taskId: row.taskId,
+    });
     return;
   }
 
   const summary = headSummaryStore.getByRunId(runId);
   if (!summary) {
+    pluginLogger?.debug(`[HeadFeedback] skipped summary row upsert because run summary was not found`, {
+      sessionId,
+      runId,
+      taskId: row.taskId,
+    });
     return;
   }
 
@@ -598,6 +623,14 @@ function upsertTaskFeedbackSummaryRow(
 
   headSummaryStore.upsert(summary);
   headSummaryStore.flush().catch(() => {});
+  pluginLogger?.debug(`[HeadFeedback] summary row upserted`, {
+    sessionId,
+    runId,
+    taskId: row.taskId,
+    reviewState: row.reviewState,
+    outcome: row.outcome,
+    tableSize: summary.taskFeedbackTable.length,
+  });
 }
 
 function clearPlanningFallback(taskId: string): void {
@@ -1171,12 +1204,22 @@ function buildPimClawTools() {
     },
     async execute(sessionId: string, params: Record<string, unknown>) {
       if (!taskRecorder) {
+        pluginLogger?.debug(`[HeadFeedback] tool invoked while service is not running`, { sessionId });
         return { output: JSON.stringify({ error: 'PimClaw service not running' }) };
       }
 
       const taskId = params.taskId as string;
+      pluginLogger?.debug(`[HeadFeedback] tool invoked`, {
+        sessionId,
+        taskId,
+        statusSummary: params.statusSummary,
+        metricAssessmentCount: Array.isArray(params.metricAssessments) ? params.metricAssessments.length : 0,
+        hasReviewerNotes: typeof params.reviewerNotes === 'string' && params.reviewerNotes.trim().length > 0,
+      });
+
       const task = taskRecorder.getTask(taskId);
       if (!task) {
+        pluginLogger?.debug(`[HeadFeedback] task not found`, { taskId, sessionId });
         return { output: JSON.stringify({ error: `Task ${taskId} not found` }) };
       }
 
@@ -1189,6 +1232,19 @@ function buildPimClawTools() {
         headFeedbackValidityMs,
       );
       const reviewState = rawReviewState === 'ineligible' ? 'rejected' : rawReviewState;
+      pluginLogger?.debug(`[HeadFeedback] review state resolved`, {
+        sessionId,
+        taskId,
+        deploymentName: task.llmDeploymentName,
+        taskStatus: task.status,
+        completedAt: task.completedAt instanceof Date ? task.completedAt.toISOString() : task.completedAt ?? null,
+        previousFeedbackSource: task.feedback?.source ?? null,
+        previousFeedbackOutcome: task.feedback?.outcome ?? null,
+        settlingDelayMs: headFeedbackSettlingDelayMs,
+        feedbackValidityMs: headFeedbackValidityMs,
+        rawReviewState,
+        reviewState,
+      });
 
       if (reviewState !== 'eligible') {
         upsertTaskFeedbackSummaryRow(
@@ -1201,6 +1257,12 @@ function buildPimClawTools() {
             null,
           ),
         );
+        pluginLogger?.debug(`[HeadFeedback] feedback submission rejected by review window`, {
+          sessionId,
+          taskId,
+          reviewState,
+          metricAssessmentCount: metricAssessments.length,
+        });
         return {
           output: JSON.stringify({
             success: false,
@@ -1222,6 +1284,17 @@ function buildPimClawTools() {
 
       const fallbackOutcome = params.outcome as 'helped' | 'no-effect' | 'worsened' | 'unknown';
       const outcome = deriveHeadFollowupOutcome(metricAssessments, fallbackOutcome);
+      pluginLogger?.debug(`[HeadFeedback] outcome derived`, {
+        sessionId,
+        taskId,
+        fallbackOutcome,
+        derivedOutcome: outcome,
+        metricAssessmentCount: metricAssessments.length,
+        metricDirections: metricAssessments.map((assessment) => ({
+          metricName: assessment.metricName,
+          direction: assessment.direction,
+        })),
+      });
 
       const feedback: TaskFeedback = {
         version: 1,
@@ -1234,6 +1307,13 @@ function buildPimClawTools() {
       };
 
       await taskRecorder.updateTaskFeedback(taskId, feedback);
+      pluginLogger?.debug(`[HeadFeedback] task feedback persisted`, {
+        taskId,
+        sessionId,
+        deploymentName: task.llmDeploymentName,
+        statusSummary: feedback.statusSummary,
+        outcome: feedback.outcome,
+      });
       await syncPlannerMemoryFromTask(taskId);
 
       const latestTask = taskRecorder.getTask(taskId) ?? task;
@@ -1247,6 +1327,13 @@ function buildPimClawTools() {
           outcome,
         ),
       );
+      pluginLogger?.debug(`[HeadFeedback] feedback flow applied`, {
+        taskId,
+        sessionId,
+        deploymentName: latestTask.llmDeploymentName,
+        reviewState: 'applied',
+        outcome,
+      });
 
       return {
         output: JSON.stringify({
