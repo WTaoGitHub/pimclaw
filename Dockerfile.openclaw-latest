@@ -6,6 +6,9 @@ COPY package.json package-lock.json tsconfig.json ./
 COPY index.ts openclaw.plugin.json AGENTS.md ./
 COPY src ./src
 COPY types ./types
+COPY agents ./agents
+COPY cicd ./cicd
+COPY docs/perfMCP ./docs/perfMCP
 
 RUN npm ci \
     && npm run build \
@@ -16,21 +19,27 @@ FROM alpine/openclaw:latest
 USER root
 
 RUN mkdir -p /app/plugins/pimclaw \
-    /home/node/.openclaw/extensions \
-    /home/node/.openclaw/workspaces/pimclaw-main \
-    /home/node/.openclaw/workspaces/pimclaw-head \
-    /home/node/.openclaw/workspaces/pimclaw-planner
+    /app/data/pimclaw/docs/perfMCP \
+    /app/seed-openclaw-home/workspaces/pimclaw-main \
+    /app/seed-openclaw-home/workspaces/pimclaw-head \
+    /app/seed-openclaw-home/workspaces/pimclaw-planner
 
 COPY --from=pimclaw-builder /build/pimclaw/package.json /app/plugins/pimclaw/package.json
 COPY --from=pimclaw-builder /build/pimclaw/package-lock.json /app/plugins/pimclaw/package-lock.json
 COPY --from=pimclaw-builder /build/pimclaw/index.ts /app/plugins/pimclaw/index.ts
 COPY --from=pimclaw-builder /build/pimclaw/openclaw.plugin.json /app/plugins/pimclaw/openclaw.plugin.json
-COPY --from=pimclaw-builder /build/pimclaw/AGENTS.md /app/plugins/pimclaw/AGENTS.md
 COPY --from=pimclaw-builder /build/pimclaw/dist /app/plugins/pimclaw/dist
 COPY --from=pimclaw-builder /build/pimclaw/node_modules /app/plugins/pimclaw/node_modules
+COPY --from=pimclaw-builder /build/pimclaw/agents/pimclaw-main/AGENTS.md /app/seed-openclaw-home/workspaces/pimclaw-main/AGENTS.md
+COPY --from=pimclaw-builder /build/pimclaw/agents/pimclaw-head/AGENTS.md /app/seed-openclaw-home/workspaces/pimclaw-head/AGENTS.md
+COPY --from=pimclaw-builder /build/pimclaw/agents/pimclaw-planner/AGENTS.md /app/seed-openclaw-home/workspaces/pimclaw-planner/AGENTS.md
+COPY --from=pimclaw-builder /build/pimclaw/cicd/openclaw.json /app/seed-openclaw-home/openclaw.json
+COPY --from=pimclaw-builder /build/pimclaw/docs/perfMCP/perfllm_mcp_server.py /app/data/pimclaw/docs/perfMCP/perfllm_mcp_server.py
 
-RUN chown -R node:node /app/plugins/pimclaw /home/node/.openclaw
+RUN chown -R node:node /app/plugins/pimclaw /app/seed-openclaw-home /app/data/pimclaw
+
+# Install Python deps for Perf MCP server
+RUN apt-get update -qq && apt-get install -y -qq python3-pip libpq-dev \
+    && pip3 install --break-system-packages psycopg2-binary "mcp>=1.0"
 
 USER node
-
-RUN openclaw plugins install /app/plugins/pimclaw

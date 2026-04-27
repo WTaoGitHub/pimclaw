@@ -1,0 +1,227 @@
+{
+  "meta": {},
+  "gateway": {
+    "auth": {
+      "mode": "token",
+      "token": "3e67fc8fa00b03cd067da420026fc56ff68d261833e45a73"
+    },
+    "controlUi": {
+      "allowedOrigins": [
+        "*"
+      ],
+      "allowInsecureAuth": true,
+      "dangerouslyDisableDeviceAuth": true
+    },
+    "mode": "local",
+    "port": 18789,
+    "bind": "lan",
+    "tailscale": {
+      "mode": "off",
+      "resetOnExit": false
+    },
+    "reload": {
+      "mode": "hot"
+    }
+  },
+  "agents": {
+    "defaults": {
+      "workspace": "/home/node/.openclaw/workspace",
+      "models": {
+        "minimax-portal/MiniMax-M2.7": {
+          "alias": "minimax-m2.7"
+        }
+      },
+      "model": {
+        "primary": "minimax-portal/MiniMax-M2.7"
+      },
+      "compaction": {
+        "mode": "safeguard"
+      }
+    },
+    "list": [
+      {
+        "id": "pimclaw-main",
+        "name": "pimclaw-main",
+        "workspace": "/home/node/.openclaw/workspaces/pimclaw-main",
+        "agentDir": "/home/node/.openclaw/agents/pimclaw-main/agent",
+        "tools": {
+          "profile": "full",
+          "allow": [
+            "pimclaw_list_tasks",
+            "pimclaw_list_components",
+            "pimclaw_health",
+            "pimclaw_component_status",
+            "pimclaw_task_status",
+            "pimclaw_route_task",
+            "pimclaw_task_counts"
+          ]
+        },
+        "skills": [],
+        "thinkingDefault": "off"
+      },
+      {
+        "id": "pimclaw-head",
+        "name": "pimclaw-head",
+        "workspace": "/home/node/.openclaw/workspaces/pimclaw-head",
+        "agentDir": "/home/node/.openclaw/agents/pimclaw-head/agent",
+        "tools": {
+          "profile": "full",
+          "allow": [
+            "pimclaw_submit_anomalies",
+            "pimclaw_query_metrics",
+            "pimclaw_submit_task_feedback"
+          ]
+        },
+        "skills": [],
+        "thinkingDefault": "off"
+      },
+      {
+        "id": "pimclaw-planner",
+        "name": "pimclaw-planner",
+        "workspace": "/home/node/.openclaw/workspaces/pimclaw-planner",
+        "agentDir": "/home/node/.openclaw/agents/pimclaw-planner/agent",
+        "tools": {
+          "profile": "full",
+          "allow": [
+            "pimclaw_list_tasks",
+            "pimclaw_plan_task",
+            "pimclaw_query_perfllm",
+            "pimclaw_get_perfllm_schema",
+            "pimclaw_sim_register_hardware",
+            "pimclaw_sim_list_hardware",
+            "pimclaw_sim_start",
+            "pimclaw_sim_stop",
+            "pimclaw_sim_status",
+            "pimclaw_sim_benchmark",
+            "pimclaw_sim_dataset_info",
+            "web_search"
+          ]
+        },
+        "skills": [],
+        "thinkingDefault": "high"
+      }
+    ]
+  },
+  "tools": {
+    "profile": "coding",
+    "web": {
+      "search": {
+        "provider": "tavily",
+        "enabled": true,
+        "openaiCodex": {}
+      },
+      "fetch": {
+        "enabled": true
+      }
+    }
+  },
+  "models": {
+    "providers": {
+      "minimax-portal": {
+        "baseUrl": "https://api.minimaxi.com/anthropic",
+        "api": "anthropic-messages",
+        "authHeader": true,
+        "models": []
+      }
+    },
+    "mode": "merge"
+  },
+  "auth": {
+    "profiles": {
+      "minimax-portal:default": {
+        "provider": "minimax-portal",
+        "mode": "oauth"
+      }
+    }
+  },
+  "channels": {
+    "feishu": {
+      "enabled": true,
+      "connectionMode": "websocket",
+      "domain": "feishu",
+      "accounts": {
+        "main-bot": {
+          "appId": "cli_a931da88bbf99bc9",
+          "appSecret": "9UMtx6R2aHNtoQ7XESMFmeqGkm4WG6rx"
+        },
+        "head-bot": {
+          "appId": "cli_a9434c31e8fa9bb5",
+          "appSecret": "XEPmAr46uBfrBdcnsskFObbkguFo8ufL"
+        },
+        "planner-bot": {
+          "appId": "cli_a96f3e6c50389bc2",
+          "appSecret": "EGYUdGN43IbPQCe2ptUJhfbNUqkwDjON"
+        },
+        "default": {
+          "groupPolicy": "open"
+        }
+      }
+    }
+  },
+  "bindings": [
+    {
+      "agentId": "pimclaw-main",
+      "match": {
+        "channel": "feishu",
+        "accountId": "main-bot"
+      }
+    },
+    {
+      "agentId": "pimclaw-head",
+      "match": {
+        "channel": "feishu",
+        "accountId": "head-bot"
+      }
+    },
+    {
+      "agentId": "pimclaw-planner",
+      "match": {
+        "channel": "feishu",
+        "accountId": "planner-bot"
+      }
+    }
+  ],
+  "plugins": {
+    "entries": {
+      "minimax": {
+        "enabled": true
+      },
+      "tavily": {
+        "enabled": true,
+        "config": {
+          "webSearch": {
+            "apiKey": "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"
+          }
+        }
+      },
+      "pimclaw": {
+        "enabled": true,
+        "config": {
+          "prometheus": {
+            "baseUrl": "http://10.1.112.237:29000"
+          },
+          "perfMcp": {
+            "env": {
+              "PERF_DB_HOST": "10.1.112.239",
+              "PERF_DB_PORT": "34567"
+            },
+            "pythonPath": "python3",
+            "serverScriptPath": "/app/data/pimclaw/docs/perfMCP/perfllm_mcp_server.py"
+          },
+          "simMcp": {
+            "sseUrl": "http://192.168.4.26:8721/sse"
+          }
+        }
+      }
+    },
+    "load": {
+      "paths": [
+        "/app/plugins/pimclaw"
+      ]
+    }
+  },
+  "logging": {
+    "level": "debug",
+    "consoleLevel": "debug"
+  }
+}

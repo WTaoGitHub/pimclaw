@@ -28,7 +28,7 @@ spec:
             claimName: pimclaw-pvc-test-1
       initContainers:
         - name: init-pimclaw-persistence
-          image: 10.1.112.238:8443/baota/pimclaw-openclaw:latest-test
+          image: 10.1.112.238:8443/baota/pimclaw-openclaw:latest-test-3
           securityContext:
             runAsUser: 0
             runAsGroup: 0
@@ -43,22 +43,54 @@ spec:
             - sh
             - -c
             - |
-              mkdir -p /home/node/.openclaw/workspaces/pimclaw-main \
-                /home/node/.openclaw/workspaces/pimclaw-head \
-                /home/node/.openclaw/workspaces/pimclaw-planner \
-                /home/node/.openclaw/state && \
-              HOME=/home/node openclaw plugins install /app/plugins/pimclaw && \
-              chown -R 1000:1000 /home/node/.openclaw
+              mkdir -p /mnt/openclaw-home && \
+              if [ ! -f /mnt/openclaw-home/openclaw.json ]; then \
+                echo "[init] First boot: seeding openclaw-home from /app/seed-openclaw-home"; \
+                cp -a /app/seed-openclaw-home/. /mnt/openclaw-home/; \
+              else \
+                echo "[init] Existing config found, skipping seed to preserve runtime state"; \
+              fi && \
+              mkdir -p /mnt/openclaw-home/state && \
+              chown -R 1000:1000 /mnt/openclaw-home
           volumeMounts:
             - name: pimclaw-persistence
-              mountPath: /home/node/.openclaw
+              mountPath: /mnt/openclaw-home
       containers:
         - name: pimclaw
-          image: 10.1.112.238:8443/baota/pimclaw-openclaw:latest-test
-          imagePullPolicy: Always
+          image: 10.1.112.238:8443/baota/pimclaw-openclaw:latest-test-3
+          imagePullPolicy: IfNotPresent
+          command:
+            - openclaw
+            - gateway
+            - --bind
+            - lan
+            - --port
+            - "18789"
           ports:
             - containerPort: 18789
               protocol: TCP
+          livenessProbe:
+            tcpSocket:
+              port: 18789
+            initialDelaySeconds: 5 # Reduced because startupProbe handles the boot
+            timeoutSeconds: 3      # Increased to tolerate brief network/CPU spikes
+            periodSeconds: 30
+            successThreshold: 1
+            failureThreshold: 5    # Increased: allows 2.5 minutes of failure before a kill
+          readinessProbe:
+            tcpSocket:
+              port: 18789
+            timeoutSeconds: 3      # Increased tolerance for slow responses
+            periodSeconds: 10      # Increased: gives the service more breathing room
+            successThreshold: 1
+            failureThreshold: 6    # Increased: allows 1 minute of "unready" before removal from LB
+          startupProbe:
+            tcpSocket:
+              port: 18789
+            timeoutSeconds: 3
+            periodSeconds: 10
+            successThreshold: 1
+            failureThreshold: 30
           resources:
             limits:
               cpu: '3'
