@@ -237,31 +237,45 @@ export class PlannerTrigger {
       this.config.timeoutSeconds * 1000,
     );
 
+    const taskContent = [
+      `Plan optimal config for the LLM deployment "${payload.deploymentName}" to address the anomalies listed in the JSON payload below.`,
+      `Review ALL ${events.length} anomaly event(s) for this deployment, decide which one(s) to handle (you may ignore lower-priority ones), and submit a SINGLE plan via pimclaw_plan_task using taskId "${taskId}".`,
+      memoryContext
+        ? `Recent planner memory is attached separately. Use it as advisory context only; do not treat it as a substitute for Perf MCP or Simulator MCP evidence.`
+        : 'No prior planner memory context is available for this deployment.',
+      JSON.stringify(payload),
+    ].join('\n\n');
+    const attachments = [
+      {
+        type: 'json',
+        content: JSON.stringify(payload),
+      },
+      ...(memoryContext
+        ? [{
+            type: 'json',
+            content: JSON.stringify(memoryContext),
+          }]
+        : []),
+    ];
+
+    this.debug('planner task content prepared', {
+      taskId,
+      deploymentName: payload.deploymentName,
+      taskContent,
+    });
+    this.debug('planner attachments prepared', {
+      taskId,
+      deploymentName: payload.deploymentName,
+      attachments,
+    });
+
     const runtimePromise = this.openclawApi.triggerAgent(this.config.agentId, {
-      task: [
-        `Plan optimal config for the LLM deployment "${payload.deploymentName}" to address the anomalies listed in the JSON payload below.`,
-        `Review ALL ${events.length} anomaly event(s) for this deployment, decide which one(s) to handle (you may ignore lower-priority ones), and submit a SINGLE plan via pimclaw_plan_task using taskId "${taskId}".`,
-        memoryContext
-          ? `Recent planner memory is attached separately. Use it as advisory context only; do not treat it as a substitute for Perf MCP or Simulator MCP evidence.`
-          : 'No prior planner memory context is available for this deployment.',
-        JSON.stringify(payload),
-      ].join('\n\n'),
+      task: taskContent,
       mode: 'run',
       cleanup: 'delete',
       runTimeoutSeconds: this.config.timeoutSeconds,
       workspaceDir: this.config.workspaceDir,
-      attachments: [
-        {
-          type: 'json',
-          content: JSON.stringify(payload),
-        },
-        ...(memoryContext
-          ? [{
-              type: 'json',
-              content: JSON.stringify(memoryContext),
-            }]
-          : []),
-      ],
+      attachments,
     });
 
     await new Promise<void>((resolve, reject) => {

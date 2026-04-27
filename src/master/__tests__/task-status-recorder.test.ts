@@ -317,6 +317,57 @@ describe('TaskStatusRecorder', () => {
     expect(counts.running).toBe(2);
   });
 
+  it('should return recent tasks by latest activity first', async () => {
+    const oldestTask = {
+      taskId: uuidv4(),
+      status: 'failed' as const,
+      createdAt: new Date('2026-04-13T12:56:16.584Z'),
+      statusModifiedAt: new Date('2026-04-13T12:58:07.255Z'),
+      priority: 'medium' as const,
+      llmDeploymentName: 'deployment-oldest',
+      taskType: 'scale-up',
+      taskData: {},
+      retryCount: 0,
+      maxRetries: 3,
+    };
+    const middleTask = {
+      taskId: uuidv4(),
+      status: 'failed' as const,
+      createdAt: new Date('2026-04-23T10:06:41.325Z'),
+      statusModifiedAt: new Date('2026-04-23T10:07:11.454Z'),
+      priority: 'medium' as const,
+      llmDeploymentName: 'deployment-middle',
+      taskType: 'scale-up',
+      taskData: {},
+      retryCount: 0,
+      maxRetries: 3,
+    };
+    const newestTask = {
+      taskId: uuidv4(),
+      status: 'failed' as const,
+      createdAt: new Date('2026-04-24T03:35:52.429Z'),
+      statusModifiedAt: new Date('2026-04-24T03:36:16.892Z'),
+      priority: 'medium' as const,
+      llmDeploymentName: 'deployment-newest',
+      taskType: 'scale-up',
+      taskData: {},
+      retryCount: 0,
+      maxRetries: 3,
+    };
+
+    await recorder.createTask(oldestTask);
+    await recorder.createTask(middleTask);
+    await recorder.createTask(newestTask);
+
+    expect(recorder.getRecentTasks(2).map((task) => task.taskId)).toEqual([
+      newestTask.taskId,
+      middleTask.taskId,
+    ]);
+    expect(recorder.getRecentTasks(1, 'failed').map((task) => task.taskId)).toEqual([
+      newestTask.taskId,
+    ]);
+  });
+
   it('should mark stale ready tasks as expired on initialize', async () => {
     // Create an old ready task (created 2 minutes ago)
     const oldTask = {

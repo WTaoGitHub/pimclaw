@@ -380,6 +380,72 @@ interface PlannerSubmission {
   simulationResults?: string;
 }
 
+function buildUnavailableEvidence(prefix: 'Perf MCP' | 'Simulator MCP'): string {
+  return `UNAVAILABLE: ${prefix} not configured or unavailable.`;
+}
+
+function appendFallbackReasoning(reasoning: string, missingEvidence: string[]): string {
+  const trimmedReasoning = reasoning.trim();
+  if (missingEvidence.length === 0) {
+    return trimmedReasoning;
+  }
+
+  const fallbackNote = `Fallback plan applied without full evidence because ${missingEvidence.join(' and ')}.`;
+  if (trimmedReasoning.includes(fallbackNote)) {
+    return trimmedReasoning;
+  }
+
+  return trimmedReasoning.length > 0
+    ? `${trimmedReasoning} ${fallbackNote}`
+    : fallbackNote;
+}
+
+function normalizePlannerSubmissionEvidence(submission: PlannerSubmission): PlannerSubmission {
+  const missingEvidence: string[] = [];
+  let perfEvidence = submission.perfEvidence;
+  let simulationResults = submission.simulationResults;
+
+  if (!perfMcpClient) {
+    perfEvidence = buildUnavailableEvidence('Perf MCP');
+    missingEvidence.push('Perf MCP is unavailable');
+  }
+
+  if (!simMcpClient) {
+    simulationResults = buildUnavailableEvidence('Simulator MCP');
+    missingEvidence.push('Simulator MCP is unavailable');
+  }
+
+  const normalized = {
+    ...submission,
+    perfEvidence,
+    simulationResults,
+    reasoning: appendFallbackReasoning(submission.reasoning, missingEvidence),
+  };
+
+  if (
+    normalized.perfEvidence !== submission.perfEvidence
+    || normalized.simulationResults !== submission.simulationResults
+    || normalized.reasoning !== submission.reasoning
+  ) {
+    pluginLogger?.debug('[PlanTask] planner submission evidence normalized', {
+      taskId: submission.taskId,
+      perfEvidenceChanged: normalized.perfEvidence !== submission.perfEvidence,
+      simulationResultsChanged: normalized.simulationResults !== submission.simulationResults,
+      reasoningChanged: normalized.reasoning !== submission.reasoning,
+      perfMcpAvailable: Boolean(perfMcpClient),
+      simMcpAvailable: Boolean(simMcpClient),
+    });
+  }
+
+  return normalized;
+}
+
+const PLANNER_OUTPUT_FORMAT_DEBUG_FILE_NAME = 'planner-output-format-debug.jsonl';
+const PLANNER_OUTPUT_FORMAT_DEBUG_MAX_LINES = 1000;
+
+let plannerOutputFormatDebugFilePath: string | null = null;
+let plannerOutputFormatDebugWriteChain: Promise<void> = Promise.resolve();
+
 function extractExpectedTaskId(taskInstruction: string): string | undefined {
   try {
     const bare = taskInstruction.match(/"taskId"\s*:\s*"([^"]+)"/);
@@ -387,6 +453,51 @@ function extractExpectedTaskId(taskInstruction: string): string | undefined {
   } catch {
     return undefined;
   }
+}
+
+async function persistPlannerOutputFormatDebugEntry(submission: { taskId?: unknown }): Promise<void> {
+  if (!plannerOutputFormatDebugFilePath) {
+    pluginLogger?.debug('[PlanTask] skipped planner output debug write because no file path is configured', {
+      taskId: submission.taskId ?? null,
+    });
+    return;
+  }
+
+  const taskId = typeof submission.taskId === 'string' ? submission.taskId : null;
+  plannerOutputFormatDebugWriteChain = plannerOutputFormatDebugWriteChain
+    .catch(() => {})
+    .then(async () => {
+      const serialized = JSON.stringify(submission);
+      let existingLines: string[] = [];
+
+      try {
+        const existingContent = await fs.readFile(plannerOutputFormatDebugFilePath as string, 'utf-8');
+        existingLines = existingContent
+          .split('\n')
+          .filter((line) => line.trim().length > 0);
+      } catch (error) {
+        const code = (error as NodeJS.ErrnoException).code;
+        if (code !== 'ENOENT') {
+          throw error;
+        }
+      }
+
+      const nextLines = [...existingLines, serialized].slice(-PLANNER_OUTPUT_FORMAT_DEBUG_MAX_LINES);
+      await fs.mkdir(path.dirname(plannerOutputFormatDebugFilePath as string), { recursive: true });
+      await fs.writeFile(
+        plannerOutputFormatDebugFilePath as string,
+        `${nextLines.join('\n')}\n`,
+        'utf-8',
+      );
+
+      pluginLogger?.debug('[PlanTask] planner output debug payload persisted', {
+        taskId,
+        filePath: plannerOutputFormatDebugFilePath,
+        entryCount: nextLines.length,
+      });
+    });
+
+  return plannerOutputFormatDebugWriteChain;
 }
 
 async function applyPlannerSubmission(submission: PlannerSubmission): Promise<{ success: true; taskId: string; message: string } | { error: string }> {
@@ -412,8 +523,10 @@ async function applyPlannerSubmission(submission: PlannerSubmission): Promise<{ 
     taskId: submission.taskId,
     taskType: submission.taskType,
     source: 'planner-agent',
-    hasPerfEvidence: !!submission.perfEvidence,
-    hasSimulationResults: !!submission.simulationResults,
+    perfEvidenceChars: submission.perfEvidence?.length ?? 0,
+    simulationResultsChars: submission.simulationResults?.length ?? 0,
+    perfEvidenceSnippet: submission.perfEvidence?.slice(0, 200) ?? null,
+    simulationResultsSnippet: submission.simulationResults?.slice(0, 200) ?? null,
     reasoningSnippet: submission.reasoning,
   });
   task.taskType = submission.taskType;
@@ -548,7 +661,18 @@ function createCliPlannerAgentApi(ctx: OpenClawPluginServiceContext): OpenClawAg
         submission = matched;
       }
 
-      const applied = await applyPlannerSubmission(submission);
+      const normalizedSubmission = normalizePlannerSubmissionEvidence(submission);
+
+      try {
+        await persistPlannerOutputFormatDebugEntry(normalizedSubmission);
+      } catch (error) {
+        pluginLogger?.warn('[PimClaw] Failed to persist planner output debug payload from CLI fallback', {
+          taskId: normalizedSubmission.taskId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+
+      const applied = await applyPlannerSubmission(normalizedSubmission);
       if ('error' in applied) {
         throw new Error(applied.error);
       }
@@ -722,6 +846,14 @@ function createPimClawService(): OpenClawPluginService {
 
       await fs.mkdir(headWorkspaceDir, { recursive: true });
       await fs.mkdir(plannerWorkspaceDir, { recursive: true });
+      plannerOutputFormatDebugFilePath = path.join(
+        plannerWorkspaceDir,
+        PLANNER_OUTPUT_FORMAT_DEBUG_FILE_NAME,
+      );
+      pluginLogger?.debug('[PimClaw] Planner output debug file resolved', {
+        plannerWorkspaceDir,
+        plannerOutputFormatDebugFilePath,
+      });
 
       plannerMemoryStore = new PlannerMemoryStore(plannerWorkspaceDir, 100, 100, fileLogger ?? undefined);
       await plannerMemoryStore.load();
@@ -934,6 +1066,8 @@ function createPimClawService(): OpenClawPluginService {
       prometheusQueryOverrides = {};
       prometheusDefaultLabels = {};
       activeEngines = [...ALL_ENGINES];
+      plannerOutputFormatDebugFilePath = null;
+      plannerOutputFormatDebugWriteChain = Promise.resolve();
       headFeedbackSettlingDelayMs = DEFAULT_HEAD_FEEDBACK_SETTLING_DELAY_MS;
       headFeedbackValidityMs = DEFAULT_HEAD_FEEDBACK_VALIDITY_MS;
       pluginConfig = {};
@@ -1382,14 +1516,26 @@ function buildPimClawTools() {
     async execute(_sessionId: string, params: Record<string, unknown>) {
       pluginLogger?.debug(`[PlanTask] tool invoked`, { taskId: params.taskId, taskType: params.taskType });
       try {
-        const result = await applyPlannerSubmission({
+        const submission: PlannerSubmission = {
           taskId: params.taskId as string,
           taskType: params.taskType as string,
           config: params.config as Record<string, unknown>,
           reasoning: params.reasoning as string,
           perfEvidence: params.perfEvidence as string | undefined,
           simulationResults: params.simulationResults as string | undefined,
-        });
+        };
+        const normalizedSubmission = normalizePlannerSubmissionEvidence(submission);
+
+        try {
+          await persistPlannerOutputFormatDebugEntry(normalizedSubmission);
+        } catch (error) {
+          pluginLogger?.warn('[PimClaw] Failed to persist planner output debug payload from tool submission', {
+            taskId: normalizedSubmission.taskId,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+
+        const result = await applyPlannerSubmission(normalizedSubmission);
 
         pluginLogger?.debug(`[PlanTask] tool result`, { taskId: params.taskId, success: !('error' in result) });
         return { output: JSON.stringify(result) };
@@ -1552,10 +1698,9 @@ function buildPimClawTools() {
         return { output: JSON.stringify({ error: 'PimClaw service not running' }) };
       }
       const limit = (params.limit as number) || 20;
-      const tasks = params.status
-        ? taskRecorder.getTasksByStatus(params.status as any)
-        : taskRecorder.getAllTasks();
-      return { output: JSON.stringify(tasks.slice(0, limit)) };
+      return {
+        output: JSON.stringify(taskRecorder.getRecentTasks(limit, params.status as any)),
+      };
     },
   });
 
@@ -1615,6 +1760,46 @@ function buildPimClawTools() {
 
   // ── Perf MCP Tools (perfllm historical data) ────────────────────────────
 
+  function summarizePerfQueryParams(params: Record<string, unknown>): Record<string, unknown> {
+    return {
+      modelName: params.model_name,
+      scenario: params.scenario,
+      engineName: params.engine_name,
+      deviceType: params.device_type,
+      nodeNum: params.node_num,
+      devicePerNode: params.device_per_node,
+      limit: params.limit,
+    };
+  }
+
+  function summarizePerfResult(result: unknown): Record<string, unknown> {
+    if (Array.isArray(result)) {
+      return {
+        resultType: 'array',
+        rowCount: result.length,
+      };
+    }
+
+    if (result && typeof result === 'object') {
+      const record = result as Record<string, unknown>;
+      const rows = Array.isArray(record.rows) ? record.rows : undefined;
+      const columns = Array.isArray(record.columns) ? record.columns : undefined;
+      return {
+        resultType: 'object',
+        resultKeys: Object.keys(record).slice(0, 12),
+        rowCount: rows?.length,
+        columnCount: columns?.length,
+        text: typeof record.text === 'string' ? record.text.slice(0, 200) : undefined,
+        error: typeof record.error === 'string' ? record.error : undefined,
+      };
+    }
+
+    return {
+      resultType: typeof result,
+      resultPreview: result == null ? result : String(result).slice(0, 200),
+    };
+  }
+
   const queryPerfllmTool = () => ({
     name: 'pimclaw_query_perfllm',
     description:
@@ -1633,18 +1818,22 @@ function buildPimClawTools() {
         limit: { type: 'number', description: 'Max rows to return (default 10, max 100)' },
       },
     },
-    async execute(_sessionId: string, params: Record<string, unknown>) {
-      pluginLogger?.debug(`[Planner:PerfQuery] historical perf query started`, {
-        model_name: params.model_name,
-        engine_name: params.engine_name,
-        device_type: params.device_type,
-        scenario: params.scenario,
-        node_num: params.node_num,
-        device_per_node: params.device_per_node,
-        limit: params.limit,
+    async execute(sessionId: string, params: Record<string, unknown>) {
+      const invocationId = uuidv4();
+      const startedAt = Date.now();
+      pluginLogger?.debug(`[Planner:PerfQuery] pimclaw_query_perfllm invoked`, {
+        invocationId,
+        sessionId,
+        connected: Boolean(perfMcpClient?.isConnected),
+        params: summarizePerfQueryParams(params),
       });
       if (!perfMcpClient) {
-        pluginLogger?.debug(`[Planner:PerfQuery] perf MCP not configured, returning error`);
+        pluginLogger?.debug(`[Planner:PerfQuery] pimclaw_query_perfllm unavailable`, {
+          invocationId,
+          sessionId,
+          durationMs: Date.now() - startedAt,
+          reason: 'perf MCP not configured',
+        });
         return {
           output: JSON.stringify({
             error: 'Perf MCP not configured. Set perfMcp.serverScriptPath in plugin config.',
@@ -1653,11 +1842,20 @@ function buildPimClawTools() {
       }
       try {
         const result = await perfMcpClient.queryPerfllm(params);
-        const rowCount = Array.isArray(result) ? result.length : (result as any)?.rows?.length ?? '?';
-        pluginLogger?.debug(`[Planner:PerfQuery] historical perf query returned`, { rowCount });
+        pluginLogger?.debug(`[Planner:PerfQuery] pimclaw_query_perfllm completed`, {
+          invocationId,
+          sessionId,
+          durationMs: Date.now() - startedAt,
+          result: summarizePerfResult(result),
+        });
         return { output: JSON.stringify(result) };
       } catch (err) {
-        pluginLogger?.debug(`[Planner:PerfQuery] historical perf query failed`, { error: err instanceof Error ? err.message : String(err) });
+        pluginLogger?.debug(`[Planner:PerfQuery] pimclaw_query_perfllm failed`, {
+          invocationId,
+          sessionId,
+          durationMs: Date.now() - startedAt,
+          error: err instanceof Error ? err.message : String(err),
+        });
         return {
           output: JSON.stringify({
             error: err instanceof Error ? err.message : String(err),
@@ -1673,10 +1871,21 @@ function buildPimClawTools() {
       'Get the schema of the perfllm database table. Shows all available columns, ' +
       'types, and nullability. Use this to understand what data is available before querying.',
     parameters: { type: 'object' as const, properties: {} },
-    async execute() {
-      pluginLogger?.debug(`[Planner:PerfQuery] fetching perfllm schema`);
+    async execute(sessionId: string) {
+      const invocationId = uuidv4();
+      const startedAt = Date.now();
+      pluginLogger?.debug(`[Planner:PerfQuery] pimclaw_get_perfllm_schema invoked`, {
+        invocationId,
+        sessionId,
+        connected: Boolean(perfMcpClient?.isConnected),
+      });
       if (!perfMcpClient) {
-        pluginLogger?.debug(`[Planner:PerfQuery] perf MCP not configured, returning error`);
+        pluginLogger?.debug(`[Planner:PerfQuery] pimclaw_get_perfllm_schema unavailable`, {
+          invocationId,
+          sessionId,
+          durationMs: Date.now() - startedAt,
+          reason: 'perf MCP not configured',
+        });
         return {
           output: JSON.stringify({
             error: 'Perf MCP not configured. Set perfMcp.serverScriptPath in plugin config.',
@@ -1685,10 +1894,20 @@ function buildPimClawTools() {
       }
       try {
         const result = await perfMcpClient.getSchema();
-        pluginLogger?.debug(`[Planner:PerfQuery] perfllm schema fetched`);
+        pluginLogger?.debug(`[Planner:PerfQuery] pimclaw_get_perfllm_schema completed`, {
+          invocationId,
+          sessionId,
+          durationMs: Date.now() - startedAt,
+          result: summarizePerfResult(result),
+        });
         return { output: JSON.stringify(result) };
       } catch (err) {
-        pluginLogger?.debug(`[Planner:PerfQuery] perfllm schema fetch failed`, { error: err instanceof Error ? err.message : String(err) });
+        pluginLogger?.debug(`[Planner:PerfQuery] pimclaw_get_perfllm_schema failed`, {
+          invocationId,
+          sessionId,
+          durationMs: Date.now() - startedAt,
+          error: err instanceof Error ? err.message : String(err),
+        });
         return {
           output: JSON.stringify({
             error: err instanceof Error ? err.message : String(err),
@@ -1699,6 +1918,66 @@ function buildPimClawTools() {
   });
 
   // ── Simulator MCP Tools (Hisim hardware-aware simulation) ────────────────
+
+  function summarizeSimParams(params: Record<string, unknown>): Record<string, unknown> {
+    return {
+      model: (params.model_path ?? params.model) as string | undefined,
+      hardware: params.hardware_name as string | undefined,
+      databasePath: params.database_path as string | undefined,
+      datasetName: params.dataset_name as string | undefined,
+      datasetPath: params.dataset_path as string | undefined,
+      baseUrl: params.base_url as string | undefined,
+      port: params.port,
+      tpSize: params.tp_size,
+      epSize: params.ep_size,
+      dpSize: params.dp_size,
+      dataType: params.data_type,
+      backend: params.backend,
+      requestRate: params.request_rate,
+      maxConcurrency: params.max_concurrency,
+      numPrompts: params.num_prompts,
+      randomInputLen: params.random_input_len,
+      randomOutputLen: params.random_output_len,
+      skipWarmup: params.skip_warmup,
+      databaseMode: params.database_mode,
+    };
+  }
+
+  function summarizeSimResult(result: unknown): Record<string, unknown> {
+    if (Array.isArray(result)) {
+      return {
+        resultType: 'array',
+        itemCount: result.length,
+      };
+    }
+
+    if (result && typeof result === 'object') {
+      const record = result as Record<string, unknown>;
+      return {
+        resultType: 'object',
+        resultKeys: Object.keys(record).slice(0, 12),
+        text: typeof record.text === 'string' ? record.text.slice(0, 200) : undefined,
+        error: typeof record.error === 'string' ? record.error : undefined,
+        meanTtftMs: record.mean_ttft_ms,
+        meanTpotMs: record.mean_tpot_ms,
+        outputThroughput: record.output_throughput,
+        requestThroughput: record.request_throughput,
+        meanE2eLatencyMs: record.mean_e2e_latency_ms,
+        running: record.running,
+        pid: record.pid,
+        registeredCount: Array.isArray(record.hardware_list)
+          ? record.hardware_list.length
+          : Array.isArray(record.hardware)
+            ? record.hardware.length
+            : undefined,
+      };
+    }
+
+    return {
+      resultType: typeof result,
+      resultPreview: result == null ? result : String(result).slice(0, 200),
+    };
+  }
 
   /** Helper: create a sim tool that proxies to SimMcpClient.callTool() */
   function simTool(
@@ -1711,18 +1990,24 @@ function buildPimClawTools() {
       name,
       description,
       parameters,
-      async execute(_sessionId: string, params: Record<string, unknown>) {
-        pluginLogger?.debug(`[Planner:Sim] ${name} called`, {
+      async execute(sessionId: string, params: Record<string, unknown>) {
+        const invocationId = uuidv4();
+        const startedAt = Date.now();
+        pluginLogger?.debug(`[Planner:Sim] ${name} invoked`, {
+          invocationId,
+          sessionId,
           hisimTool: hisimToolName,
-          model: (params.model_path ?? params.model) as string | undefined,
-          hardware: params.hardware_name as string | undefined,
-          tpSize: params.tp_size,
-          dataType: params.data_type,
-          datasetName: params.dataset_name,
-          requestRate: params.request_rate,
+          connected: Boolean(simMcpClient?.isConnected),
+          params: summarizeSimParams(params),
         });
         if (!simMcpClient) {
-          pluginLogger?.debug(`[Planner:Sim] sim MCP not configured, returning error`, { hisimTool: hisimToolName });
+          pluginLogger?.debug(`[Planner:Sim] ${name} unavailable`, {
+            invocationId,
+            sessionId,
+            hisimTool: hisimToolName,
+            durationMs: Date.now() - startedAt,
+            reason: 'sim MCP not configured',
+          });
           return {
             output: JSON.stringify({
               error: 'Sim MCP not configured. Set simMcp.sseUrl in plugin config.',
@@ -1731,10 +2016,22 @@ function buildPimClawTools() {
         }
         try {
           const result = await simMcpClient.callTool(hisimToolName, params);
-          pluginLogger?.debug(`[Planner:Sim] ${name} returned`, { hisimTool: hisimToolName });
+          pluginLogger?.debug(`[Planner:Sim] ${name} completed`, {
+            invocationId,
+            sessionId,
+            hisimTool: hisimToolName,
+            durationMs: Date.now() - startedAt,
+            result: summarizeSimResult(result),
+          });
           return { output: JSON.stringify(result) };
         } catch (err) {
-          pluginLogger?.debug(`[Planner:Sim] ${name} failed`, { hisimTool: hisimToolName, error: err instanceof Error ? err.message : String(err) });
+          pluginLogger?.debug(`[Planner:Sim] ${name} failed`, {
+            invocationId,
+            sessionId,
+            hisimTool: hisimToolName,
+            durationMs: Date.now() - startedAt,
+            error: err instanceof Error ? err.message : String(err),
+          });
           return {
             output: JSON.stringify({
               error: err instanceof Error ? err.message : String(err),

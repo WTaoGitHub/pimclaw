@@ -75,7 +75,7 @@
         "properties": {
           "pythonPath": { "type": "string", "default": "python3.12", "description": "Path to Python interpreter" },
           "serverScriptPath": { "type": "string", "description": "Absolute path to perfllm_mcp_server.py" },
-          "env": { "type": "object", "additionalProperties": { "type": "string" }, "description": "Extra env vars for the Python process" }
+          "env": { "type": "object", "additionalProperties": { "type": "string" }, "description": "Extra env vars for the Python process, for example PERF_DB_HOST=host.docker.internal and PERF_DB_PORT=34567 when the DB is only reachable from the host" }
         },
         "required": ["serverScriptPath"]
       },

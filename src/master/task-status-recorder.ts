@@ -231,6 +231,22 @@ export class TaskStatusRecorder {
     return Array.from(this.tasks.values());
   }
 
+  getRecentTasks(limit: number, status?: TaskStatus): Task[] {
+    const tasks = status ? this.getTasksByStatus(status) : this.getAllTasks();
+
+    return tasks
+      .slice()
+      .sort((left, right) => {
+        const statusDelta = new Date(right.statusModifiedAt).getTime() - new Date(left.statusModifiedAt).getTime();
+        if (statusDelta !== 0) {
+          return statusDelta;
+        }
+
+        return new Date(right.createdAt).getTime() - new Date(left.createdAt).getTime();
+      })
+      .slice(0, limit);
+  }
+
   /**
    * Update task status
    */

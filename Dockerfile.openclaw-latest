@@ -1,0 +1,36 @@
+FROM node:24-bookworm AS pimclaw-builder
+
+WORKDIR /build/pimclaw
+
+COPY package.json package-lock.json tsconfig.json ./
+COPY index.ts openclaw.plugin.json AGENTS.md ./
+COPY src ./src
+COPY types ./types
+
+RUN npm ci \
+    && npm run build \
+    && npm prune --omit=dev
+
+FROM alpine/openclaw:latest
+
+USER root
+
+RUN mkdir -p /app/plugins/pimclaw \
+    /home/node/.openclaw/extensions \
+    /home/node/.openclaw/workspaces/pimclaw-main \
+    /home/node/.openclaw/workspaces/pimclaw-head \
+    /home/node/.openclaw/workspaces/pimclaw-planner
+
+COPY --from=pimclaw-builder /build/pimclaw/package.json /app/plugins/pimclaw/package.json
+COPY --from=pimclaw-builder /build/pimclaw/package-lock.json /app/plugins/pimclaw/package-lock.json
+COPY --from=pimclaw-builder /build/pimclaw/index.ts /app/plugins/pimclaw/index.ts
+COPY --from=pimclaw-builder /build/pimclaw/openclaw.plugin.json /app/plugins/pimclaw/openclaw.plugin.json
+COPY --from=pimclaw-builder /build/pimclaw/AGENTS.md /app/plugins/pimclaw/AGENTS.md
+COPY --from=pimclaw-builder /build/pimclaw/dist /app/plugins/pimclaw/dist
+COPY --from=pimclaw-builder /build/pimclaw/node_modules /app/plugins/pimclaw/node_modules
+
+RUN chown -R node:node /app/plugins/pimclaw /home/node/.openclaw
+
+USER node
+
+RUN openclaw plugins install /app/plugins/pimclaw

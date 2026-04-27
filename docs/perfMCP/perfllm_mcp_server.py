@@ -3,6 +3,8 @@
 MCP Server for PostgreSQL perfllm database
 """
 
+import os
+
 import psycopg2
 from psycopg2.extras import RealDictCursor
 from mcp.server import Server
@@ -11,11 +13,11 @@ from mcp.types import Tool, TextContent
 
 # Database configuration
 DB_CONFIG = {
-    "host": "10.1.112.239",
-    "port": 34567,
-    "user": "postgres",
-    "password": "psql_admin123",
-    "database": "postgres",
+    "host": os.environ.get("PERF_DB_HOST", "10.1.112.239"),
+    "port": int(os.environ.get("PERF_DB_PORT", "34567")),
+    "user": os.environ.get("PERF_DB_USER", "postgres"),
+    "password": os.environ.get("PERF_DB_PASSWORD", "psql_admin123"),
+    "database": os.environ.get("PERF_DB_NAME", "postgres"),
 }
 
 # Initialize the server
@@ -189,7 +191,13 @@ async def main():
     """Run the MCP server."""
     import sys
     print("perfllm MCP server starting...", file=sys.stderr)
-    print("Database:", DB_CONFIG["host"], "/", DB_CONFIG["database"], file=sys.stderr)
+    print(
+        "Database:",
+        f"{DB_CONFIG['host']}:{DB_CONFIG['port']}",
+        "/",
+        DB_CONFIG["database"],
+        file=sys.stderr,
+    )
     async with stdio_server() as (read_stream, write_stream):
         await server.run(
             read_stream,

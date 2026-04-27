@@ -4,16 +4,48 @@ MCP 服务器，用于查询 `perfllm` 数据库表（LLM 性能测试数据）�
 
 ## 配置
 
-在 `perfllm_mcp_server.py` 文件开头修改 `DB_CONFIG`：
+在 `perfllm_mcp_server.py` 文件开头修改 `DB_CONFIG`，或通过环境变量覆盖：
 
 ```python
 DB_CONFIG = {
     "host": "your-db-host",
+    "port": 34567,
     "user": "your-db-user",
     "password": "your-db-password",
     "database": "your-db-name",
 }
 ```
+
+支持的环境变量：`PERF_DB_HOST`、`PERF_DB_PORT`、`PERF_DB_USER`、`PERF_DB_PASSWORD`、`PERF_DB_NAME`。
+
+### Docker Desktop on macOS
+
+如果数据库地址只能从宿主机访问，而不能从 Docker 容器直接访问，不要让容器直接连接远端 IP。这个仓库已经提供了宿主机桥接脚本：
+
+```bash
+python3 tmp/docker-port-bridge.py
+```
+
+这会在宿主机监听：
+
+- `host.docker.internal:34567` → `10.1.112.239:34567`
+
+此时在 OpenClaw / PimClaw 容器内，把 Perf MCP 子进程环境配置为：
+
+```json
+{
+  "perfMcp": {
+    "pythonPath": "python3.12",
+    "serverScriptPath": "/path/to/perfllm_mcp_server.py",
+    "env": {
+      "PERF_DB_HOST": "host.docker.internal",
+      "PERF_DB_PORT": "34567"
+    }
+  }
+}
+```
+
+这样数据库链路会变成：容器 → `host.docker.internal:34567` → 宿主机桥接 → `10.1.112.239:34567`。
 
 ## 依赖
 
