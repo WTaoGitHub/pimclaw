@@ -1,0 +1,48 @@
+apiVersion: v1
+data:
+  jobs.json: |-
+    {
+      "version": 1,
+      "jobs": [
+        {
+          "id": "45adeaa1-aff7-4d17-9512-d6ec49e1050f",
+          "agentId": "pimclaw-head",
+          "name": "pimclaw-head",
+          "enabled": true,
+          "createdAtMs": 1776320661152,
+          "updatedAtMs": 1777343411331,
+          "schedule": {
+            "kind": "cron",
+            "expr": "*/5 * * * *"
+          },
+          "sessionTarget": "isolated",
+          "wakeMode": "now",
+          "payload": {
+            "kind": "agentTurn",
+            "message": "Hey, Pimclaw-head, get to work!",
+            "timeoutSeconds": 240
+          },
+          "state": {
+            "lastRunAtMs": 1777343400009,
+            "lastRunStatus": "ok",
+            "lastStatus": "ok",
+            "lastDurationMs": 11322,
+            "lastDeliveryStatus": "delivered",
+            "consecutiveErrors": 0,
+            "nextRunAtMs": 1777343700000,
+            "lastDelivered": true
+          },
+          "deleteAfterRun": false,
+          "delivery": {
+            "mode": "announce",
+            "channel": "feishu",
+            "to": "oc_f305d0c3cf623806cd3f15a6a03dd636",
+            "bestEffort": false
+          }
+        }
+      ]
+    }
+kind: ConfigMap
+metadata:
+  name: pimclaw-config
+  namespace: baota-playground

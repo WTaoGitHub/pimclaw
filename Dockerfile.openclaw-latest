@@ -7,12 +7,15 @@ COPY index.ts openclaw.plugin.json AGENTS.md ./
 COPY src ./src
 COPY types ./types
 COPY agents ./agents
-COPY cicd ./cicd
 COPY docs/perfMCP ./docs/perfMCP
 
 RUN npm ci \
     && npm run build \
     && npm prune --omit=dev
+
+# Install Python deps for Perf MCP — wheels pre-downloaded to avoid apt-get
+COPY cicd/wheels /build/wheels
+RUN python3 -c 'import zipfile, os, glob; os.makedirs("/build/python-deps", exist_ok=True); [zipfile.ZipFile(w).extractall("/build/python-deps") for w in glob.glob("/build/wheels/*.whl")]; print("Python deps:", len(os.listdir("/build/python-deps")), "entries")'
 
 FROM alpine/openclaw:latest
 
@@ -33,13 +36,12 @@ COPY --from=pimclaw-builder /build/pimclaw/node_modules /app/plugins/pimclaw/nod
 COPY --from=pimclaw-builder /build/pimclaw/agents/pimclaw-main/AGENTS.md /app/seed-openclaw-home/workspaces/pimclaw-main/AGENTS.md
 COPY --from=pimclaw-builder /build/pimclaw/agents/pimclaw-head/AGENTS.md /app/seed-openclaw-home/workspaces/pimclaw-head/AGENTS.md
 COPY --from=pimclaw-builder /build/pimclaw/agents/pimclaw-planner/AGENTS.md /app/seed-openclaw-home/workspaces/pimclaw-planner/AGENTS.md
-COPY --from=pimclaw-builder /build/pimclaw/cicd/openclaw.json /app/seed-openclaw-home/openclaw.json
 COPY --from=pimclaw-builder /build/pimclaw/docs/perfMCP/perfllm_mcp_server.py /app/data/pimclaw/docs/perfMCP/perfllm_mcp_server.py
 
-RUN chown -R node:node /app/plugins/pimclaw /app/seed-openclaw-home /app/data/pimclaw
+# Python deps for Perf MCP server (built in builder stage, copied here)
+COPY --from=pimclaw-builder /build/python-deps /app/python-deps
+ENV PYTHONPATH=/app/python-deps
 
-# Install Python deps for Perf MCP server
-RUN apt-get update -qq && apt-get install -y -qq python3-pip libpq-dev \
-    && pip3 install --break-system-packages psycopg2-binary "mcp>=1.0"
+RUN chown -R node:node /app/plugins/pimclaw /app/seed-openclaw-home /app/data/pimclaw /app/python-deps
 
 USER node

@@ -26,9 +26,15 @@ spec:
         - name: pimclaw-persistence
           persistentVolumeClaim:
             claimName: pimclaw-pvc-test-1
+        - name: pimclaw-secret
+          secret:
+            secretName: pimclaw-secret
+        - name: pimclaw-config
+          configMap:
+            name: pimclaw-config
       initContainers:
         - name: init-pimclaw-persistence
-          image: 10.1.112.238:8443/baota/pimclaw-openclaw:latest-test-3
+          image: 10.1.112.238:8443/baota/pimclaw-openclaw:latest-test
           securityContext:
             runAsUser: 0
             runAsGroup: 0
@@ -44,11 +50,18 @@ spec:
             - -c
             - |
               mkdir -p /mnt/openclaw-home && \
-              if [ ! -f /mnt/openclaw-home/openclaw.json ]; then \
-                echo "[init] First boot: seeding openclaw-home from /app/seed-openclaw-home"; \
-                cp -a /app/seed-openclaw-home/. /mnt/openclaw-home/; \
+              if [ ! -f /mnt/openclaw-home/.seeded ]; then \
+                echo "[init] First boot: seeding openclaw-home (workspaces only)"; \
+                mkdir -p /mnt/openclaw-home/cron \
+                         /mnt/openclaw-home/workspaces/pimclaw-main \
+                         /mnt/openclaw-home/workspaces/pimclaw-head \
+                         /mnt/openclaw-home/workspaces/pimclaw-planner; \
+                cp /app/seed-openclaw-home/workspaces/pimclaw-main/AGENTS.md   /mnt/openclaw-home/workspaces/pimclaw-main/AGENTS.md; \
+                cp /app/seed-openclaw-home/workspaces/pimclaw-head/AGENTS.md   /mnt/openclaw-home/workspaces/pimclaw-head/AGENTS.md; \
+                cp /app/seed-openclaw-home/workspaces/pimclaw-planner/AGENTS.md /mnt/openclaw-home/workspaces/pimclaw-planner/AGENTS.md; \
+                touch /mnt/openclaw-home/.seeded; \
               else \
-                echo "[init] Existing config found, skipping seed to preserve runtime state"; \
+                echo "[init] Existing state found (.seeded present), skipping seed to preserve runtime state"; \
               fi && \
               mkdir -p /mnt/openclaw-home/state && \
               chown -R 1000:1000 /mnt/openclaw-home
@@ -57,7 +70,7 @@ spec:
               mountPath: /mnt/openclaw-home
       containers:
         - name: pimclaw
-          image: 10.1.112.238:8443/baota/pimclaw-openclaw:latest-test-3
+          image: 10.1.112.238:8443/baota/pimclaw-openclaw:latest-test
           imagePullPolicy: IfNotPresent
           command:
             - openclaw
@@ -93,14 +106,20 @@ spec:
             failureThreshold: 30
           resources:
             limits:
-              cpu: '3'
-              memory: 4Gi
+              cpu: '6'
+              memory: 8Gi
             requests:
-              cpu: '2'
-              memory: 2Gi
+              cpu: '4'
+              memory: 4Gi
           volumeMounts:
             - name: pimclaw-persistence
               mountPath: /home/node/.openclaw
+            - name: pimclaw-secret
+              mountPath: /home/node/.openclaw/openclaw.json
+              subPath: openclaw.json
+            - name: pimclaw-config
+              mountPath: /home/node/.openclaw/cron/jobs.json
+              subPath: jobs.json
           terminationMessagePath: /dev/termination-log
           terminationMessagePolicy: File
       restartPolicy: Always

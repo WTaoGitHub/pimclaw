@@ -6,7 +6,7 @@
   "gateway": {
     "auth": {
       "mode": "token",
-      "token": "3e67fc8fa00b03cd067da420026fc56ff68d261833e45a73"
+      "token": "baota123"
     },
     "controlUi": {
       "allowedOrigins": [
@@ -28,17 +28,16 @@
   },
   "agents": {
     "defaults": {
-      "workspace": "/home/node/.openclaw/workspace",
-      "models": {
-        "minimax-portal/MiniMax-M2.7": {
-          "alias": "minimax-m2.7"
-        }
-      },
-      "model": {
-        "primary": "minimax-portal/MiniMax-M2.7"
-      },
       "compaction": {
         "mode": "safeguard"
+      },
+      "model": {
+        "primary": "custom-baotaai-bedicloud-net/bedi/kimi-k2.6"
+      },
+      "models": {
+        "custom-baotaai-bedicloud-net/bedi/kimi-k2.6": {
+          "alias": "k2.6"
+        }
       }
     },
     "list": [
@@ -105,6 +104,34 @@
       }
     ]
   },
+  "models": {
+    "mode": "merge",
+    "providers": {
+      "custom-baotaai-bedicloud-net": {
+        "baseUrl": "https://baotaai.bedicloud.net/v1",
+        "api": "openai-completions",
+        "apiKey": "sk-fpveYdrQJMYEMEP361C66126Ea4f4f85923e696867207181",
+        "models": [
+          {
+            "id": "bedi/kimi-k2.6",
+            "name": "bedi/kimi-k2.6 (Custom Provider)",
+            "contextWindow": 1024000,
+            "maxTokens": 4096,
+            "input": [
+              "text"
+            ],
+            "cost": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0
+            },
+            "reasoning": false
+          }
+        ]
+      }
+    }
+  },
   "tools": {
     "profile": "coding",
     "web": {
@@ -115,25 +142,6 @@
       },
       "fetch": {
         "enabled": true
-      }
-    }
-  },
-  "models": {
-    "providers": {
-      "minimax-portal": {
-        "baseUrl": "https://api.minimaxi.com/anthropic",
-        "api": "anthropic-messages",
-        "authHeader": true,
-        "models": []
-      }
-    },
-    "mode": "merge"
-  },
-  "auth": {
-    "profiles": {
-      "minimax-portal:default": {
-        "provider": "minimax-portal",
-        "mode": "oauth"
       }
     }
   },
