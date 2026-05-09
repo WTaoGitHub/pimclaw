@@ -155,6 +155,8 @@ let prometheusClient: PrometheusClient | null = null;
 let engineMcpClient: EngineMcpClient | null = null;
 let perfMcpClient: PerfMcpClient | null = null;
 let simMcpClient: SimMcpClient | null = null;
+let simMcpConfig: SimMcpConfig | null = null;
+let simMcpUnavailableReason = 'sim MCP not configured';
 let taskExecutor: TaskExecutor | null = null;
 let plannerMemoryStore: PlannerMemoryStore | null = null;
 let prometheusQueryOverrides: Record<string, string> = {};
@@ -438,6 +440,30 @@ function normalizePlannerSubmissionEvidence(submission: PlannerSubmission): Plan
   }
 
   return normalized;
+}
+
+async function connectSimMcpClient(logger: OpenClawPluginServiceContext['logger'] | null): Promise<boolean> {
+  if (!simMcpConfig?.sseUrl) {
+    simMcpUnavailableReason = 'sim MCP not configured';
+    return false;
+  }
+
+  try {
+    const client = new SimMcpClient({
+      sseUrl: simMcpConfig.sseUrl,
+    });
+    await client.connect();
+    simMcpClient = client;
+    simMcpUnavailableReason = '';
+    logger?.info(`[PimClaw] Sim MCP connected → ${simMcpConfig.sseUrl}`);
+    return true;
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    simMcpClient = null;
+    simMcpUnavailableReason = msg;
+    logger?.warn(`[PimClaw] Sim MCP unavailable: ${msg}`);
+    return false;
+  }
 }
 
 const PLANNER_OUTPUT_FORMAT_DEBUG_FILE_NAME = 'planner-output-format-debug.jsonl';
@@ -999,19 +1025,16 @@ function createPimClawService(): OpenClawPluginService {
 
       // 8. SimMcpClient — for Planner simulation-based config validation
       const simCfg = (config as any)?.simMcp;
+      simMcpConfig = simCfg?.sseUrl
+        ? { sseUrl: simCfg.sseUrl }
+        : null;
       if (simCfg?.sseUrl) {
-        try {
-          simMcpClient = new SimMcpClient({
-            sseUrl: simCfg.sseUrl,
-          });
-          await simMcpClient.connect();
-          ctx.logger.info(`[PimClaw] Sim MCP connected → ${simCfg.sseUrl}`);
-        } catch (err) {
-          const msg = err instanceof Error ? err.message : String(err);
-          ctx.logger.error(`[PimClaw] Sim MCP connection failed: ${msg}`);
-          simMcpClient = null;
+        const connected = await connectSimMcpClient(ctx.logger);
+        if (!connected) {
+          ctx.logger.error(`[PimClaw] Sim MCP connection failed: ${simMcpUnavailableReason}`);
         }
       } else {
+        simMcpUnavailableReason = 'sim MCP not configured';
         ctx.logger.warn('[PimClaw] No simMcp.sseUrl configured — pimclaw_sim_* tools will be unavailable');
       }
 
@@ -1051,6 +1074,8 @@ function createPimClawService(): OpenClawPluginService {
         await simMcpClient.disconnect();
         simMcpClient = null;
       }
+      simMcpConfig = null;
+      simMcpUnavailableReason = 'sim MCP not configured';
       taskExecutor = null;
       registry = null;
       if (metricsStore) {
@@ -2000,17 +2025,25 @@ function buildPimClawTools() {
           connected: Boolean(simMcpClient?.isConnected),
           params: summarizeSimParams(params),
         });
+        if (!simMcpClient && simMcpConfig?.sseUrl) {
+          await connectSimMcpClient(pluginLogger);
+        }
         if (!simMcpClient) {
+          const reason = simMcpConfig?.sseUrl
+            ? `sim MCP unavailable: ${simMcpUnavailableReason}`
+            : 'sim MCP not configured';
           pluginLogger?.debug(`[Planner:Sim] ${name} unavailable`, {
             invocationId,
             sessionId,
             hisimTool: hisimToolName,
             durationMs: Date.now() - startedAt,
-            reason: 'sim MCP not configured',
+            reason,
           });
           return {
             output: JSON.stringify({
-              error: 'Sim MCP not configured. Set simMcp.sseUrl in plugin config.',
+              error: simMcpConfig?.sseUrl
+                ? `Sim MCP unavailable: ${simMcpUnavailableReason}`
+                : 'Sim MCP not configured. Set simMcp.sseUrl in plugin config.',
             }),
           };
         }
