@@ -12,15 +12,15 @@ openclaw cron add \
   --no-deliver
 
   openclaw cron add \
-  --name "pimclaw-head" \
+  --name "monitoring" \
   --agent pimclaw-head \
   --cron "*/5 * * * *" \
-  --session main \
-  --tools "pimclaw_submit_anomalies,pimclaw_query_metrics" \
-  --thinking off \
-  --timeout-seconds 300 \
-  --light-context \
-  --system-event "Hey, Pimclaw-head, get to work!"
+  --session isolated \
+  --timeout-seconds 280 \
+  --session isolated \
+  --session-key "cron" \
+  --message "Hey, Pimclaw-head, get to work!" \
+  --announce 
 
 
   openclaw cron add \
@@ -73,3 +73,60 @@ openclaw cron add \
   --timeout-seconds 240 \
   --light-context \
   --no-deliver
+
+
+  openclaw cron add \
+  --name "workflowToM2.5-4" \
+  --agent main \
+  --every "2m" \
+  --session isolated \
+  --message "随机生成一道中国高考题目，包含语数外，物化生，政史地9门科目。并回答。" \
+  --thinking high \
+  --timeout-seconds 100 \
+  --light-context \
+  --no-deliver
+
+
+
+  openclaw cron add \
+  --name "快去干活" \
+  --agent pimclaw-head \
+  --timeout-seconds 280 \
+  --every "5m" \
+  --session session:morning \
+  --model "deepseek/deepseek-v4-flash" \
+  --message "快去干活." \
+  --announce \
+  --channel feishu \
+  --to "channel:oc_f305d0c3cf623806cd3f15a6a03dd636"
+
+
+
+
+
+
+    openclaw cron add \
+  --name "快去干活-Minimax" \
+  --agent pimclaw-head \
+  --timeout-seconds 280 \
+  --every "5m" \
+  --session session:morning \
+  --model "minimax/MiniMax-M2.7" \
+  --message "快去干活." \
+  --announce \
+  --channel feishu \
+  --to "channel:oc_f305d0c3cf623806cd3f15a6a03dd636"
+
+
+
+      openclaw cron add \
+  --name "快去干活-Minimax" \
+  --agent pimclaw-head \
+  --timeout-seconds 280 \
+  --every "5m" \
+  --session session:morning \
+  --model "minimax/MiniMax-M2.7" \
+  --message "Get to work, Review only the latest 1 messages in our recent conversation and summarize them. Ignore all messages prior to those 1." \
+  --announce \
+  --channel feishu \
+  --to "channel:oc_f305d0c3cf623806cd3f15a6a03dd636"

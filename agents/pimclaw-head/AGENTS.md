@@ -173,6 +173,8 @@ Rules:
 - Do NOT put anything other than the current 5-minute window average in `Current Values`.
 - Do NOT put anything other than the previous 5-minute window average, or `n/a` when unavailable, in `Prior Values`.
 - Do NOT merge multiple deployments into one table.
+- Do NOT show the data about any deployment which is not included in the current prometheus server‘s response.
+
 
 ### Table 2
 

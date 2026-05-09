@@ -46,12 +46,6 @@ sync_configs() {
     --from-file=openclaw.json="$REPO_ROOT/cicd/openclaw.json" \
     -n "$NAMESPACE" \
     --dry-run=client -o yaml | kubectl apply -f - -n "$NAMESPACE"
-
-  echo "=== Syncing ConfigMap (jobs.json) ==="
-  kubectl create configmap pimclaw-config \
-    --from-file=jobs.json="$REPO_ROOT/cicd/cron/jobs.json" \
-    -n "$NAMESPACE" \
-    --dry-run=client -o yaml | kubectl apply -f - -n "$NAMESPACE"
 }
 
 # ── Restart pod ──────────────────────────────────────────────────────────────
@@ -79,14 +73,12 @@ fresh_pvc() {
 # ── Validate config JSON ─────────────────────────────────────────────────────
 
 validate_json() {
-  for f in "$REPO_ROOT/cicd/openclaw.json" "$REPO_ROOT/cicd/cron/jobs.json"; do
-    if ! python3 -m json.tool "$f" > /dev/null 2>&1; then
-      echo "ERROR: Invalid JSON: $f"
-      python3 -m json.tool "$f" 2>&1 || true
-      exit 1
-    fi
-  done
-  echo "=== Config JSONs valid ==="
+  if ! python3 -m json.tool "$REPO_ROOT/cicd/openclaw.json" > /dev/null 2>&1; then
+    echo "ERROR: Invalid JSON: $REPO_ROOT/cicd/openclaw.json"
+    python3 -m json.tool "$REPO_ROOT/cicd/openclaw.json" 2>&1 || true
+    exit 1
+  fi
+  echo "=== Config JSON valid ==="
 }
 
 # ── Main ─────────────────────────────────────────────────────────────────────

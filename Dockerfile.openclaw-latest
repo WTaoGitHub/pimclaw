@@ -23,6 +23,7 @@ USER root
 
 RUN mkdir -p /app/plugins/pimclaw \
     /app/data/pimclaw/docs/perfMCP \
+    /app/seed-openclaw-home/cron \
     /app/seed-openclaw-home/workspaces/pimclaw-main \
     /app/seed-openclaw-home/workspaces/pimclaw-head \
     /app/seed-openclaw-home/workspaces/pimclaw-planner

@@ -113,8 +113,9 @@ best practices, or vendor advisories:
 ## Planning Workflow
 
 1. **Prepare the Planning Workflow Process logging file**
-   - Create a file named with the task ID, e.g. `planning-workflow-<taskId>.log`
-   - Store the file to the workspace of pimclaw-planner agent.
+   - Create a file named with the corresponding task ID, e.g. `planning-workflow-<taskId>.log`
+   - Write a timestamped entry for each step of the workflow, including your reasoning, thinking steps, and results at each stage. This log is for debugging and transparency, and should reflect your internal thought process as you work through the planning workflow.
+   - Save the file to the workspace of the pimclaw-planner agent, "/home/node/.openclaw/workspaces/pimclaw-planner".
 
 2. **Determine MCP availability before planning.**
    - Check whether Perf MCP and Simulator MCP are explicitly configured in `openclaw.json`.
@@ -174,6 +175,7 @@ best practices, or vendor advisories:
    - If recent task `feedback` indicates the same tactic recently failed or had no clear effect,
      treat that as a caution signal and explain how it influenced candidate ranking.
    - If Perf MCP or Simulator MCP was `UNAVAILABLE`, you MUST explicitly state that your selection is a fallback decision made without full evidence.
+   - Write the reasoning, thinking steps, and results of this selection process to the planning workflow log file.
 
 8. **Submit the plan.** Call pimclaw_plan_task with the selected configuration,
    including your reasoning and the simulation results that justify it.

@@ -1,0 +1,367 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: pimclaw-new
+  namespace: baota-playground
+  labels:
+    app: pimclaw-new
+spec:
+  strategy:
+    type: Recreate
+  replicas: 1
+  selector:
+    matchLabels:
+      app: pimclaw-new
+  template:
+    metadata:
+      labels:
+        app: pimclaw-new
+    spec:
+      initContainers:
+        - name: init-openclaw-config
+          image: 10.1.112.238:8443/baota/alpine:3.23.3
+          securityContext:
+            runAsUser: 0
+          command:
+            - sh
+            - -lc
+            - |
+              set -eux
+              mkdir -p /home/node/.openclaw
+
+              cat > /home/node/.openclaw/openclaw.json <<'EOF'
+              {
+                "meta": {
+                  "lastTouchedVersion": "2026.4.24",
+                  "lastTouchedAt": "2026-04-28T00:00:00.000Z"
+                },
+                "gateway": {
+                  "auth": {
+                    "mode": "token",
+                    "token": "baota123"
+                  },
+                  "controlUi": {
+                    "allowedOrigins": [
+                      "*"
+                    ],
+                    "allowInsecureAuth": true,
+                    "dangerouslyDisableDeviceAuth": true
+                  },
+                  "mode": "local",
+                  "port": 18789,
+                  "bind": "lan",
+                  "tailscale": {
+                    "mode": "off",
+                    "resetOnExit": false
+                  },
+                  "reload": {
+                    "mode": "hot"
+                  }
+                },
+                "agents": {
+                  "defaults": {
+                    "models": {
+                      "minimax/MiniMax-M2.7": {
+                        "alias": "Minimax"
+                      },
+                      "custom-baotaai-bedicloud-net/bedi/kimi-k2.6": {
+                        "alias": "k2.6"
+                      }
+                    },
+                    "model": {
+                      "primary": "minimax/MiniMax-M2.7"
+                    }
+                  },
+                  "list": [
+                    {
+                      "id": "pimclaw-main",
+                      "name": "pimclaw-main",
+                      "workspace": "/home/node/.openclaw/workspaces/pimclaw-main",
+                      "agentDir": "/home/node/.openclaw/agents/pimclaw-main/agent",
+                      "tools": {
+                        "profile": "full",
+                        "allow": [
+                          "pimclaw_list_tasks",
+                          "pimclaw_list_components",
+                          "pimclaw_health",
+                          "pimclaw_component_status",
+                          "pimclaw_task_status",
+                          "pimclaw_route_task",
+                          "pimclaw_task_counts"
+                        ]
+                      },
+                      "skills": [],
+                      "thinkingDefault": "off"
+                    },
+                    {
+                      "id": "pimclaw-head",
+                      "name": "pimclaw-head",
+                      "workspace": "/home/node/.openclaw/workspaces/pimclaw-head",
+                      "agentDir": "/home/node/.openclaw/agents/pimclaw-head/agent",
+                      "tools": {
+                        "profile": "full",
+                        "allow": [
+                          "pimclaw_submit_anomalies",
+                          "pimclaw_query_metrics",
+                          "pimclaw_submit_task_feedback",
+                          "pimclaw_list_tasks"
+                        ]
+                      },
+                      "skills": [],
+                      "thinkingDefault": "off"
+                    },
+                    {
+                      "id": "pimclaw-planner",
+                      "name": "pimclaw-planner",
+                      "workspace": "/home/node/.openclaw/workspaces/pimclaw-planner",
+                      "agentDir": "/home/node/.openclaw/agents/pimclaw-planner/agent",
+                      "tools": {
+                        "profile": "full",
+                        "allow": [
+                          "pimclaw_list_tasks",
+                          "pimclaw_plan_task",
+                          "pimclaw_query_perfllm",
+                          "pimclaw_get_perfllm_schema",
+                          "pimclaw_sim_register_hardware",
+                          "pimclaw_sim_list_hardware",
+                          "pimclaw_sim_start",
+                          "pimclaw_sim_stop",
+                          "pimclaw_sim_status",
+                          "pimclaw_sim_benchmark",
+                          "pimclaw_sim_dataset_info",
+                          "web_search"
+                        ]
+                      },
+                      "skills": [],
+                      "thinkingDefault": "high"
+                    }
+                  ]
+                },
+                "models": {
+                  "mode": "merge",
+                  "providers": {
+                    "custom-baotaai-bedicloud-net": {
+                      "baseUrl": "https://baotaai.bedicloud.net/v1",
+                      "api": "openai-completions",
+                      "apiKey": "sk-fpveYdrQJMYEMEP361C66126Ea4f4f85923e696867207181",
+                      "models": [
+                        {
+                          "id": "bedi/kimi-k2.6",
+                          "name": "bedi/kimi-k2.6 (Custom Provider)",
+                          "contextWindow": 204800,
+                          "maxTokens": 131072,
+                          "input": [
+                            "text"
+                          ],
+                          "cost": {
+                            "input": 0,
+                            "output": 0,
+                            "cacheRead": 0,
+                            "cacheWrite": 0
+                          },
+                          "reasoning": false
+                        }
+                      ]
+                    },
+                    "minimax": {
+                      "baseUrl": "https://api.minimaxi.com/anthropic",
+                      "models": [
+                        {
+                          "id": "MiniMax-M2.7",
+                          "name": "MiniMax M2.7",
+                          "reasoning": true,
+                          "input": [
+                            "text",
+                            "image"
+                          ],
+                          "cost": {
+                            "input": 0.3,
+                            "output": 1.2,
+                            "cacheRead": 0.06,
+                            "cacheWrite": 0.375
+                          },
+                          "contextWindow": 204800,
+                          "maxTokens": 131072
+                        }
+                      ],
+                      "api": "anthropic-messages",
+                      "authHeader": true
+                    }
+                  }
+                },
+                "auth": {
+                  "profiles": {
+                    "minimax:cn": {
+                      "provider": "minimax",
+                      "mode": "api_key"
+                    }
+                  }
+                },
+                "tools": {
+                  "profile": "coding",
+                  "web": {
+                    "search": {
+                      "provider": "tavily",
+                      "enabled": true,
+                      "openaiCodex": {}
+                    },
+                    "fetch": {
+                      "enabled": true
+                    }
+                  }
+                },
+                "channels": {
+                  "feishu": {
+                    "enabled": true,
+                    "connectionMode": "websocket",
+                    "domain": "feishu",
+                    "accounts": {
+                      "main-bot": {
+                        "appId": "cli_a931da88bbf99bc9",
+                        "appSecret": "9UMtx6R2aHNtoQ7XESMFmeqGkm4WG6rx"
+                      },
+                      "head-bot": {
+                        "appId": "cli_a9434c31e8fa9bb5",
+                        "appSecret": "XEPmAr46uBfrBdcnsskFObbkguFo8ufL"
+                      },
+                      "planner-bot": {
+                        "appId": "cli_a96f3e6c50389bc2",
+                        "appSecret": "EGYUdGN43IbPQCe2ptUJhfbNUqkwDjON"
+                      }
+                    }
+                  }
+                },
+                "bindings": [
+                  {
+                    "agentId": "pimclaw-main",
+                    "match": {
+                      "channel": "feishu",
+                      "accountId": "main-bot"
+                    }
+                  },
+                  {
+                    "agentId": "pimclaw-head",
+                    "match": {
+                      "channel": "feishu",
+                      "accountId": "head-bot"
+                    }
+                  },
+                  {
+                    "agentId": "pimclaw-planner",
+                    "match": {
+                      "channel": "feishu",
+                      "accountId": "planner-bot"
+                    }
+                  }
+                ],
+                "plugins": {
+                  "entries": {
+                    "minimax": {
+                      "enabled": true
+                    },
+                    "tavily": {
+                      "enabled": true,
+                      "config": {
+                        "webSearch": {
+                          "apiKey": "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"
+                        }
+                      }
+                    },
+                    "pimclaw": {
+                      "enabled": true,
+                      "config": {
+                        "prometheus": {
+                          "baseUrl": "http://10.109.9.57:9090"
+                        },
+                        "perfMcp": {
+                          "env": {
+                            "PERF_DB_HOST": "10.1.112.239",
+                            "PERF_DB_PORT": "34567"
+                          },
+                          "pythonPath": "python3",
+                          "serverScriptPath": "/home/node/.openclaw/pimclaw/docs/perfMCP/perfllm_mcp_server.py"
+                        },
+                        "simMcp": {
+                          "sseUrl": "http://192.168.4.26:8721/sse"
+                        }
+                      }
+                    }
+                  },
+                  "load": {
+                    "paths": [
+                      "/home/node/.openclaw/pimclaw"
+                    ]
+                  }
+                },
+                "logging": {
+                  "level": "debug",
+                  "consoleLevel": "debug"
+                }
+              }
+              EOF
+
+              chown 1000:1000 /home/node/.openclaw
+              chown 1000:1000 /home/node/.openclaw/openclaw.json
+              chmod u+rwx /home/node/.openclaw
+          resources:
+            requests:
+              cpu: "1"
+              memory: "512Mi"
+            limits:
+              cpu: "1"
+              memory: "512Mi"
+          volumeMounts:
+            - name: workspace
+              mountPath: /home/node/.openclaw
+
+      containers:
+        - name: pimclaw
+          image: 10.1.112.238:8443/baota/openclaw:2026.4.26
+          imagePullPolicy: IfNotPresent
+          command:
+            - openclaw
+            - gateway
+            - --bind
+            - lan
+            - --port
+            - "18789"
+          ports:
+            - containerPort: 18789
+              name: http
+          livenessProbe:
+            tcpSocket:
+              port: 18789
+            initialDelaySeconds: 5 # Reduced because startupProbe handles the boot
+            timeoutSeconds: 3      # Increased to tolerate brief network/CPU spikes
+            periodSeconds: 30
+            successThreshold: 1
+            failureThreshold: 5    # Increased: allows 2.5 minutes of failure before a kill
+          readinessProbe:
+            tcpSocket:
+              port: 18789
+            timeoutSeconds: 3      # Increased tolerance for slow responses
+            periodSeconds: 10      # Increased: gives the service more breathing room
+            successThreshold: 1
+            failureThreshold: 6    # Increased: allows 1 minute of "unready" before removal from LB
+          startupProbe:
+            tcpSocket:
+              port: 18789
+            timeoutSeconds: 3
+            periodSeconds: 10
+            successThreshold: 1
+            failureThreshold: 30
+          resources:
+            requests:
+              cpu: "2"
+              memory: "4Gi"
+            limits:
+              cpu: "4"
+              memory: "8Gi"
+          volumeMounts:
+            - name: workspace
+              mountPath: /home/node/.openclaw
+
+      volumes:
+        - name: workspace
+          persistentVolumeClaim:
+            claimName: pimclaw-pvc-test-2
