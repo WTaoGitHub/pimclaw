@@ -33,6 +33,7 @@ vi.mock('../master/sim-mcp-client.js', () => ({
 
 type RegisteredTool = {
   name: string;
+  parameters: Record<string, any>;
   execute: (sessionId: string, params: Record<string, unknown>) => Promise<{ output: string }>;
 };
 
@@ -150,5 +151,114 @@ describe('openclaw plugin sim tool', () => {
     expect(connectMock).toHaveBeenCalledTimes(2);
     expect(callToolMock).toHaveBeenCalledWith('list_all_hardware', {});
     expect(JSON.parse(response.output)).toEqual({ items: [{ name: 'nvidia/h800' }] });
+  });
+
+  it('exposes updated HiSim simulator tool schemas', () => {
+    const registerTool = getTool('pimclaw_sim_register_hardware');
+    const startTool = getTool('pimclaw_sim_start');
+    const benchmarkTool = getTool('pimclaw_sim_benchmark');
+
+    expect(registerTool.parameters.required).toEqual([
+      'name',
+      'vendor',
+      'hbm_capacity_gb',
+      'hbm_bandwidth_gb',
+      'fp64_tflops',
+      'fp32_tflops',
+      'fp16_tflops',
+      'int8_tflops',
+    ]);
+    expect(registerTool.parameters.properties).toEqual(
+      expect.objectContaining({
+        fp16_tensor_tflops: expect.any(Object),
+        fp32_tensor_tflops: expect.any(Object),
+        fp8_tensor_tflops: expect.any(Object),
+        int8_tensor_tflops: expect.any(Object),
+        bf16_tensor_tflops: expect.any(Object),
+        ref: expect.any(Object),
+      }),
+    );
+
+    expect(startTool.parameters.required).toEqual(['model_path', 'hardware_name']);
+    expect(startTool.parameters.properties.port.description).toContain('8723');
+    expect(startTool.parameters.properties.skip_warmup.description).toContain('false');
+    expect(startTool.parameters.properties).toEqual(
+      expect.objectContaining({
+        database_path: expect.any(Object),
+        config_path: expect.any(Object),
+        host: expect.any(Object),
+        model_name: expect.any(Object),
+        device_name: expect.any(Object),
+        kv_cache_data_type: expect.any(Object),
+        backend_name: expect.any(Object),
+        backend_version: expect.any(Object),
+        disk_read_bandwidth_gb: expect.any(Object),
+        disk_write_bandwidth_gb: expect.any(Object),
+        memory_read_bandwidth_gb: expect.any(Object),
+        memory_write_bandwidth_gb: expect.any(Object),
+        num_device_per_node: expect.any(Object),
+        hardware_info_path: expect.any(Object),
+        auto_register_model: expect.any(Object),
+        output_path: expect.any(Object),
+      }),
+    );
+
+    expect(benchmarkTool.parameters.properties.base_url.description).toContain('8723');
+    expect(benchmarkTool.parameters.properties.base_url.description).not.toContain('8001');
+    expect(benchmarkTool.parameters.properties).toEqual(
+      expect.objectContaining({
+        random_range_ratio: expect.any(Object),
+        seed: expect.any(Object),
+        disable_tqdm: expect.any(Object),
+        disable_stream: expect.any(Object),
+        disable_ignore_eos: expect.any(Object),
+        extra_request_body: expect.any(Object),
+        warmup_requests: expect.any(Object),
+        output_file: expect.any(Object),
+        output_details: expect.any(Object),
+      }),
+    );
+  });
+
+  it('keeps public sim tools mapped to the expected HiSim raw tools', async () => {
+    connectMock.mockResolvedValue(undefined);
+    callToolMock
+      .mockResolvedValueOnce({ status: 'started' })
+      .mockResolvedValueOnce({ status: 'success', mean_ttft_ms: 10 })
+      .mockResolvedValueOnce({ status: 'stopped' });
+
+    await registeredService.start({
+      config: {
+        simMcp: {
+          sseUrl: 'http://192.168.4.26:8721/sse',
+        },
+      },
+      stateDir,
+      workspaceDir,
+      logger: {
+        info() {},
+        warn() {},
+        error() {},
+        debug() {},
+      },
+    });
+
+    await getTool('pimclaw_sim_start').execute('planner-session-e2e', {
+      model_path: 'Qwen/Qwen2.5-7B-Instruct',
+      hardware_name: 'NVIDIA H800_SXM',
+    });
+    await getTool('pimclaw_sim_benchmark').execute('planner-session-e2e', {
+      model: 'Qwen/Qwen2.5-7B-Instruct',
+    });
+    await getTool('pimclaw_sim_stop').execute('planner-session-e2e', {});
+
+    expect(callToolMock).toHaveBeenNthCalledWith(1, 'start_simulation_server', {
+      model_path: 'Qwen/Qwen2.5-7B-Instruct',
+      hardware_name: 'NVIDIA H800_SXM',
+    });
+    expect(callToolMock).toHaveBeenNthCalledWith(2, 'run_bench_serving', {
+      model: 'Qwen/Qwen2.5-7B-Instruct',
+    });
+    expect(callToolMock).toHaveBeenNthCalledWith(3, 'stop_simulation_server', {});
   });
 });

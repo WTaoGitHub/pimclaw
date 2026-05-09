@@ -381,17 +381,21 @@ via the Hisim MCP server. Available tools:
 **Hardware management:**
 - `pimclaw_sim_list_hardware` — list registered hardware accelerators
 - `pimclaw_sim_register_hardware` — register new hardware (name, vendor, hbm_capacity_gb,
-  hbm_bandwidth_gb, fp16_tflops, num_devices, etc.)
+  hbm_bandwidth_gb, fp64_tflops, fp32_tflops, fp16_tflops, int8_tflops,
+  tensor TFLOPS fields, device aliases, etc.)
 
 **Simulation server:**
-- `pimclaw_sim_start` — start simulation server (model_path, hardware_name, database_path,
-  tp_size, dp_size, data_type: FP16/BF16/FP8/INT8, etc.)
+- `pimclaw_sim_start` — start simulation server (model_path, hardware_name,
+  optional database_path, optional device_name, port default 8723, tp_size, dp_size,
+  data_type: FP16/BF16/FP8/INT8, etc.)
 - `pimclaw_sim_stop` — stop simulation server
 - `pimclaw_sim_status` — check if simulation server is running
 
 **Benchmarking:**
 - `pimclaw_sim_benchmark` — run benchmark serving (model, dataset_name: random/sharegpt/hisim-collection,
-  num_prompts, random_input_len, random_output_len, request_rate, max_concurrency)
+  base_url default http://127.0.0.1:8723, num_prompts, random_input_len,
+  random_output_len, random_range_ratio, request_rate, max_concurrency,
+  warmup_requests, output_file, output_details)
   Returns: mean_ttft_ms, mean_tpot_ms, output_throughput, request_throughput, mean_e2e_latency_ms
 - `pimclaw_sim_dataset_info` — preview dataset info before benchmarking
 
