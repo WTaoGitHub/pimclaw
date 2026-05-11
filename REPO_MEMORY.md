@@ -73,7 +73,7 @@ planning → ready → scheduling → scheduled → running → done/failed/expi
 
 Fallback: if Planner times out, `applyFallbackPlan()` applies a default task type/config.
 
-## Tool Inventory (21 tools)
+## Tool Inventory (22 tools)
 
 Registered via `openclaw.plugin.json` contracts and built in `buildPimClawTools()`:
 
@@ -91,6 +91,7 @@ Registered via `openclaw.plugin.json` contracts and built in `buildPimClawTools(
 | `pimclaw_list_tasks` | List tasks with optional status filter | Head/Planner/Operator |
 | `pimclaw_retry_task` | Reset failed task for retry | Operator |
 | `pimclaw_revoke_task` | Cancel task (mark expired) | Operator |
+| `pim_get_hf_models` | Search Hugging Face model catalog | Planner |
 | `pimclaw_query_perfllm` | Query perfllm historical benchmark data | Planner |
 | `pimclaw_get_perfllm_schema` | Get perfllm table schema | Planner |
 | `pimclaw_sim_register_hardware` | Register hardware for simulation | Planner |

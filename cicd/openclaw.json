@@ -88,6 +88,7 @@
           "allow": [
             "pimclaw_list_tasks",
             "pimclaw_plan_task",
+            "pim_get_hf_models",
             "pimclaw_query_perfllm",
             "pimclaw_get_perfllm_schema",
             "pimclaw_sim_register_hardware",

@@ -102,6 +102,7 @@
       "pimclaw_retry_task",
       "pimclaw_revoke_task",
       "pimclaw_query_metrics",
+      "pim_get_hf_models",
       "pimclaw_query_perfllm",
       "pimclaw_get_perfllm_schema",
       "pimclaw_sim_register_hardware",

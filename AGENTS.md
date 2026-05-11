@@ -97,13 +97,18 @@ For each deployment and metric:
 
 ## Metrics to Monitor
 
-Collect from Prometheus via pimclaw_query_metrics, focusing on these key indicators:
-- **TTFT** (Time to First Token) — latency indicator
-- **TPOT** (Time per Output Token) — generation speed
-- **QPS** (Queries per Second) — request volume
-- **Throughput** (tokens/sec) — capacity utilization
-- **GPU Utilization** (%) — hardware saturation
-- **Error Rate** (%) — service health
+Collect from Prometheus via pimclaw_query_metrics, focusing on these key indicators.
+Use these units consistently in reasoning, anomaly observations, and monitoring
+tables:
+
+| Metric | Unit | Meaning |
+|--------|------|---------|
+| `ttft` | seconds (`s`) | Time to first token latency |
+| `tpot` | seconds per output token (`s/token`) | Generation speed |
+| `qps` | requests per second (`req/s`) | Request volume |
+| `throughput` | tokens per second (`tokens/s`) | Output capacity |
+| `gpu_utilization` | percent (`%`) | GPU utilization; convert ratio values like `0.06` to `6%` when the metric is returned as a 0-1 ratio |
+| `error_rate` | percent (`%`) | Request error rate; convert ratio values like `0.05` to `5%` when the metric is returned as a 0-1 ratio |
 
 ## Anomaly Detection Guidelines
 
@@ -113,8 +118,8 @@ stable if the current value is already far outside an acceptable operating
 range.
 
 Assume TTFT and TPOT values are expressed in seconds unless metric labels or
-tool output explicitly indicate another unit. If a value appears unit-ambiguous,
-state the assumption in the anomaly reasoning.
+tool output explicitly indicate milliseconds. If a value appears unit-ambiguous,
+state the assumption in the anomaly reasoning and output table.
 
 ### High Severity (immediate action needed)
 - TTFT increase >200% from previous observation
@@ -206,8 +211,8 @@ Columns:
 
 Rules:
 - Do NOT change the row order. Use exactly: `ttft`, `tpot`, `qps`, `throughput`, `gpu_utilization`, `error_rate`.
-- Do NOT put anything other than the current 5-minute window average in `Current Values`.
-- Do NOT put anything other than the previous 5-minute window average, or `n/a` when unavailable, in `Prior Values`.
+- Do NOT put anything other than the current 5-minute window average plus its unit in `Current Values`, for example `77.13s`, `0.068s/token`, `0.088req/s`, `143.48tokens/s`, `6%`, or `0%`.
+- Do NOT put anything other than the previous 5-minute window average plus its unit, or `n/a` when unavailable, in `Prior Values`.
 - Do NOT merge multiple deployments into one table.
 
 ### Table 2
@@ -362,6 +367,25 @@ Do not use task history to:
 - bypass Perf MCP or Simulator MCP evidence requirements
 - infer fresh deployment health across unrelated deployments
 - submit follow-up plans automatically without a new anomaly payload
+
+### Hugging Face Model Discovery (pim_get_hf_models)
+Use `pim_get_hf_models` to search [Hugging Face models](https://huggingface.co/models)
+when you need model identifiers, task tags, popularity signals, or candidate
+model variants before querying historical performance data or planning a config.
+The tool queries the Hugging Face model API and may fall back to `hf-mirror.com`
+when `huggingface.co` is unreachable from the runtime.
+
+Parameters:
+- `search` — free-text search query, for example `"qwen3"`, `"glm"`, or `"text-generation"`
+- `author` — optional Hugging Face author or organization, for example `"Qwen"` or `"meta-llama"`
+- `task` — optional pipeline task, for example `"text-generation"`
+- `tags` — optional array of Hugging Face model tags
+- `sort` — one of `downloads`, `likes`, `lastModified`, `createdAt`, or `modelId`
+- `direction` — `desc` or `asc`
+- `limit` — max rows to return, default 10 and maximum 50
+
+Use this tool as discovery context only. It does not replace Perf MCP historical
+performance evidence or Simulator MCP validation.
 
 ### Perf MCP — Historical Performance Data (pimclaw_query_perfllm / pimclaw_get_perfllm_schema)
 Query past deployment configurations and their measured performance using

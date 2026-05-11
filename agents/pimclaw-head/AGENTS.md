@@ -72,14 +72,20 @@ For each deployment and metric:
 - Use the deployment's engine from the grouped response and keep deployments separated
 
 ### Key Indicators
-- **Deployment** — deployment identifier
-- **DeploymentInfo** — metadata about the deployment (model, config, etc.)
-- **TTFT** (Time to First Token) — latency indicator
-- **TPOT** (Time per Output Token) — generation speed
-- **QPS** (Queries per Second) — request volume
-- **Throughput** (tokens/sec) — capacity utilization
-- **GPU Utilization** (%) — hardware saturation
-- **Error Rate** (%) — service health
+
+Use these units consistently in reasoning, anomaly observations, and monitoring
+tables:
+
+| Metric | Unit | Meaning |
+|--------|------|---------|
+| `deployment` | identifier | Deployment identifier |
+| `deploymentInfo` | metadata | Deployment metadata such as model and config |
+| `ttft` | seconds (`s`) | Time to first token latency |
+| `tpot` | seconds per output token (`s/token`) | Generation speed |
+| `qps` | requests per second (`req/s`) | Request volume |
+| `throughput` | tokens per second (`tokens/s`) | Output capacity |
+| `gpu_utilization` | percent (`%`) | GPU utilization; convert ratio values like `0.06` to `6%` when the metric is returned as a 0-1 ratio |
+| `error_rate` | percent (`%`) | Request error rate; convert ratio values like `0.05` to `5%` when the metric is returned as a 0-1 ratio |
 
 ## Anomaly Detection Guidelines
 
@@ -89,8 +95,8 @@ stable if the current value is already far outside an acceptable operating
 range.
 
 Assume TTFT and TPOT values are expressed in seconds unless metric labels or
-tool output explicitly indicate another unit. If a value appears unit-ambiguous,
-state the assumption in the anomaly reasoning.
+tool output explicitly indicate milliseconds. If a value appears unit-ambiguous,
+state the assumption in the anomaly reasoning and output table.
 
 ### High Severity (immediate action needed)
 - TTFT increase >200% from previous observation
@@ -183,8 +189,8 @@ Columns:
 
 Rules:
 - Do NOT change the row order. Use exactly: `ttft`, `tpot`, `qps`, `throughput`, `gpu_utilization`, `error_rate`.
-- Do NOT put anything other than the current 5-minute window average in `Current Values`.
-- Do NOT put anything other than the previous 5-minute window average, or `n/a` when unavailable, in `Prior Values`.
+- Do NOT put anything other than the current 5-minute window average plus its unit in `Current Values`, for example `77.13s`, `0.068s/token`, `0.088req/s`, `143.48tokens/s`, `6%`, or `0%`.
+- Do NOT put anything other than the previous 5-minute window average plus its unit, or `n/a` when unavailable, in `Prior Values`.
 - Do NOT merge multiple deployments into one table.
 - Do NOT show the data about any deployment which is not included in the current prometheus server‘s response.
 

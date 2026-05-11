@@ -56,13 +56,16 @@ spec:
                          /mnt/openclaw-home/workspaces/pimclaw-head \
                          /mnt/openclaw-home/workspaces/pimclaw-planner; \
                 cp /app/seed-openclaw-home/cron/jobs.json            /mnt/openclaw-home/cron/jobs.json; \
-                cp /app/seed-openclaw-home/workspaces/pimclaw-main/AGENTS.md   /mnt/openclaw-home/workspaces/pimclaw-main/AGENTS.md; \
-                cp /app/seed-openclaw-home/workspaces/pimclaw-head/AGENTS.md   /mnt/openclaw-home/workspaces/pimclaw-head/AGENTS.md; \
-                cp /app/seed-openclaw-home/workspaces/pimclaw-planner/AGENTS.md /mnt/openclaw-home/workspaces/pimclaw-planner/AGENTS.md; \
                 touch /mnt/openclaw-home/.seeded; \
               else \
                 echo "[init] Existing state found (.seeded present), skipping seed to preserve runtime state"; \
               fi && \
+              mkdir -p /mnt/openclaw-home/workspaces/pimclaw-main \
+                       /mnt/openclaw-home/workspaces/pimclaw-head \
+                       /mnt/openclaw-home/workspaces/pimclaw-planner && \
+              cp /app/seed-openclaw-home/workspaces/pimclaw-main/AGENTS.md    /mnt/openclaw-home/workspaces/pimclaw-main/AGENTS.md && \
+              cp /app/seed-openclaw-home/workspaces/pimclaw-head/AGENTS.md    /mnt/openclaw-home/workspaces/pimclaw-head/AGENTS.md && \
+              cp /app/seed-openclaw-home/workspaces/pimclaw-planner/AGENTS.md /mnt/openclaw-home/workspaces/pimclaw-planner/AGENTS.md && \
               mkdir -p /mnt/openclaw-home/state && \
               chown -R 1000:1000 /mnt/openclaw-home
           volumeMounts:

@@ -53,6 +53,25 @@ Do not use task history to:
 - infer fresh deployment health across unrelated deployments
 - submit follow-up plans automatically without a new anomaly payload
 
+### Hugging Face Model Discovery (pim_get_hf_models)
+Use `pim_get_hf_models` to search [Hugging Face models](https://huggingface.co/models)
+when you need model identifiers, task tags, popularity signals, or candidate
+model variants before querying historical performance data or planning a config.
+The tool queries the Hugging Face model API and may fall back to `hf-mirror.com`
+when `huggingface.co` is unreachable from the runtime.
+
+Parameters:
+- `search` — free-text search query, for example `"qwen3"`, `"glm"`, or `"text-generation"`
+- `author` — optional Hugging Face author or organization, for example `"Qwen"` or `"meta-llama"`
+- `task` — optional pipeline task, for example `"text-generation"`
+- `tags` — optional array of Hugging Face model tags
+- `sort` — one of `downloads`, `likes`, `lastModified`, `createdAt`, or `modelId`
+- `direction` — `desc` or `asc`
+- `limit` — max rows to return, default 10 and maximum 50
+
+Use this tool as discovery context only. It does not replace Perf MCP historical
+performance evidence or Simulator MCP validation.
+
 ### Perf MCP — Historical Performance Data (pimclaw_query_perfllm / pimclaw_get_perfllm_schema)
 Query past deployment configurations and their measured performance using
 the `pimclaw_query_perfllm` tool. Use `pimclaw_get_perfllm_schema` first

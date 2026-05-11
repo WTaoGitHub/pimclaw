@@ -1184,6 +1184,173 @@ function createPimClawService(): OpenClawPluginService {
 // ─── Tool builders ─────────────────────────────────────────────────────────
 
 function buildPimClawTools() {
+  // ── Hugging Face model discovery ────────────────────────────────────────
+  const getHgModelsTool = () => ({
+    name: 'pim_get_hf_models',
+    description:
+      'Search Hugging Face models via the public model catalog. Use this to discover candidate model IDs, tasks, tags, downloads, and likes before planning deployment configs.',
+    parameters: {
+      type: 'object' as const,
+      properties: {
+        search: {
+          type: 'string',
+          description: 'Free-text search query, for example "qwen3", "glm", or "text-generation".',
+        },
+        author: {
+          type: 'string',
+          description: 'Optional Hugging Face author or organization filter, for example "Qwen" or "meta-llama".',
+        },
+        task: {
+          type: 'string',
+          description: 'Optional pipeline task filter, for example "text-generation" or "text-generation-inference".',
+        },
+        tags: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'Optional model tags to filter by.',
+        },
+        sort: {
+          type: 'string',
+          enum: ['downloads', 'likes', 'lastModified', 'createdAt', 'modelId'],
+          description: 'Sort field. Defaults to downloads.',
+        },
+        direction: {
+          type: 'string',
+          enum: ['asc', 'desc'],
+          description: 'Sort direction. Defaults to desc.',
+        },
+        limit: {
+          type: 'number',
+          description: 'Maximum number of models to return. Defaults to 10, maximum 50.',
+        },
+      },
+    },
+    async execute(sessionId: string, params: Record<string, unknown>) {
+      const startedAt = Date.now();
+      const invocationId = uuidv4();
+      const limit = Math.min(Math.max(Number(params.limit ?? 10) || 10, 1), 50);
+      const buildModelsUrl = (baseUrl: string) => {
+        const url = new URL('/api/models', baseUrl);
+        url.searchParams.set('limit', String(limit));
+        url.searchParams.set('full', 'false');
+        url.searchParams.set('sort', typeof params.sort === 'string' ? params.sort : 'downloads');
+        url.searchParams.set('direction', params.direction === 'asc' ? '1' : '-1');
+
+        if (typeof params.search === 'string' && params.search.trim()) {
+          url.searchParams.set('search', params.search.trim());
+        }
+        if (typeof params.author === 'string' && params.author.trim()) {
+          url.searchParams.set('author', params.author.trim());
+        }
+        if (typeof params.task === 'string' && params.task.trim()) {
+          url.searchParams.append('filter', params.task.trim());
+        }
+        if (Array.isArray(params.tags)) {
+          for (const tag of params.tags) {
+            if (typeof tag === 'string' && tag.trim()) {
+              url.searchParams.append('filter', tag.trim());
+            }
+          }
+        }
+        return url;
+      };
+
+      const endpoints = [
+        { label: 'huggingface', baseUrl: 'https://huggingface.co' },
+        { label: 'hf-mirror', baseUrl: 'https://hf-mirror.com' },
+      ];
+
+      pluginLogger?.debug('[Planner:HgModels] pim_get_hf_models invoked', {
+        invocationId,
+        sessionId,
+        search: params.search,
+        author: params.author,
+        task: params.task,
+        tags: params.tags,
+        limit,
+      });
+
+      try {
+        let payload: unknown;
+        let endpointUsed = endpoints[0];
+        const errors: string[] = [];
+        for (const endpoint of endpoints) {
+          const url = buildModelsUrl(endpoint.baseUrl);
+          try {
+            const response = await fetch(url, {
+              headers: { accept: 'application/json' },
+              signal: AbortSignal.timeout(10_000),
+            });
+            if (!response.ok) {
+              throw new Error(`${response.status} ${response.statusText}`);
+            }
+            payload = await response.json();
+            endpointUsed = endpoint;
+            break;
+          } catch (fetchErr) {
+            const cause =
+              fetchErr instanceof Error && (fetchErr as any).cause
+                ? ` (${(fetchErr as any).cause.code ?? (fetchErr as any).cause.message})`
+                : '';
+            errors.push(`${endpoint.label}: ${fetchErr instanceof Error ? fetchErr.message : String(fetchErr)}${cause}`);
+          }
+        }
+        if (!payload) {
+          throw new Error(`Hugging Face model API unavailable: ${errors.join('; ')}`);
+        }
+        const models = Array.isArray(payload) ? payload : [];
+        const compactModels = models.map((model: any) => ({
+          modelId: model.modelId ?? model.id,
+          author: model.author,
+          pipelineTag: model.pipeline_tag,
+          tags: Array.isArray(model.tags) ? model.tags.slice(0, 20) : [],
+          downloads: model.downloads,
+          likes: model.likes,
+          private: model.private,
+          gated: model.gated,
+          lastModified: model.lastModified,
+          url: model.modelId ? `https://huggingface.co/${model.modelId}` : undefined,
+        }));
+
+        pluginLogger?.debug('[Planner:HgModels] pim_get_hf_models completed', {
+          invocationId,
+          sessionId,
+          durationMs: Date.now() - startedAt,
+          count: compactModels.length,
+        });
+
+        return {
+          output: JSON.stringify({
+            source: 'https://huggingface.co/models',
+            endpoint: endpointUsed.baseUrl,
+            query: {
+              search: params.search ?? null,
+              author: params.author ?? null,
+              task: params.task ?? null,
+              tags: Array.isArray(params.tags) ? params.tags : [],
+              sort: typeof params.sort === 'string' ? params.sort : 'downloads',
+              direction: params.direction === 'asc' ? 'asc' : 'desc',
+              limit,
+            },
+            models: compactModels,
+          }),
+        };
+      } catch (err) {
+        pluginLogger?.debug('[Planner:HgModels] pim_get_hf_models failed', {
+          invocationId,
+          sessionId,
+          durationMs: Date.now() - startedAt,
+          error: err instanceof Error ? err.message : String(err),
+        });
+        return {
+          output: JSON.stringify({
+            error: err instanceof Error ? err.message : String(err),
+          }),
+        };
+      }
+    },
+  });
+
   // ── Prometheus Metrics Tool (Phase 1, Step 3) ──────────────────────────
   const queryMetricsTool = () => ({
     name: 'pimclaw_query_metrics',
@@ -2327,6 +2494,7 @@ function buildPimClawTools() {
     planTaskTool,
     routeTaskTool,
     queryMetricsTool,
+    getHgModelsTool,
     queryPerfllmTool,
     getPerfllmSchemaTool,
     simRegisterHardwareTool,

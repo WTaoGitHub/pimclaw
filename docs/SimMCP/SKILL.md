@@ -122,13 +122,16 @@ register_hardware_batch(specs=[
 
 ### Simulation Service Management
 
+### HuggingFace Models
+Fetch models information from HuggingFace Hub, https://huggingface.co/models. model path or name must match a registered model on HuggingFace. Fetch the models information and store them in the local memory for later use when starting simulation server, sync with HuggingFace Hub to get the latest models information once there is no matching model found in the local memory when starting simulation server.
+
 #### `start_simulation_server`
 
 Start SGLang simulation service with hardware-aware configuration.
 
 ```python
 start_simulation_server(
-    model_path="/models/Qwen2-7B-Instruct",
+    model_path="/Qwen/Qwen2-7B-Instruct",
     hardware_name = "H800",
     device_name = "h800_sxm",
     port=8723,
@@ -141,7 +144,7 @@ start_simulation_server(
 ```
 
 **Required Arguments:**
-- `model_path`: model name (e.g., "Qwen/Qwen2.5-7B-Instruct").  
+- `model_path`: model path or name (e.g., "Qwen/Qwen2.5-7B-Instruct", the value must match a registered model on huggingface).  
 - `hardware_name`: Simulation hardware name (must be registered, i.e., "H800")
 
 
