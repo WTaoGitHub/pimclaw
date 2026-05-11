@@ -1355,7 +1355,7 @@ function buildPimClawTools() {
   const queryMetricsTool = () => ({
     name: 'pimclaw_query_metrics',
     description:
-      'Query Prometheus for inference metrics (TTFT, TPOT, QPS, throughput, GPU utilization, error rate) across all configured inference engines (vllm, sglang). Results are grouped by engine. Use rangeMinutes to get time-series data as [timestamp, value] pairs for trend analysis. Called by the Head Agent every 5 minutes.',
+      'Query Prometheus for inference metrics (TTFT, TPOT, QPS, throughput, GPU utilization, error rate) across all configured inference engines (vllm, sglang). Results are grouped by engine. Use rangeMinutes to get time-series data as [timestamp, value] pairs for trend analysis. TTFT and TPOT values are already in seconds; do not divide them by 1000. Called by the Head Agent every 5 minutes.',
     parameters: {
       type: 'object' as const,
       properties: {
@@ -1401,6 +1401,44 @@ function buildPimClawTools() {
       const deploymentName = params.deploymentName as string | undefined;
       const rangeMinutes = params.rangeMinutes as number | undefined;
       const nowSec = Math.floor(Date.now() / 1000);
+      const unitHints: Record<string, { unit: string; note: string }> = {
+        ttft: {
+          unit: 'seconds',
+          note: 'Values from vllm:time_to_first_token_seconds_bucket / sglang:time_to_first_token_seconds_bucket are already seconds. Example: 78 means 78s, not 78ms or 0.078s.',
+        },
+        tpot: {
+          unit: 'seconds_per_token',
+          note: 'Values are already seconds per output token. Do not divide by 1000 unless a future metric name explicitly says milliseconds.',
+        },
+        qps: {
+          unit: 'requests_per_second',
+          note: 'Requests per second.',
+        },
+        throughput: {
+          unit: 'tokens_per_second',
+          note: 'Generated tokens per second.',
+        },
+        gpu_utilization: {
+          unit: 'ratio',
+          note: 'Usually returned as a 0-1 ratio. Convert 0.06 to 6% only for display.',
+        },
+        error_rate: {
+          unit: 'percent',
+          note: 'Returned as percent because the PromQL multiplies by 100.',
+        },
+      };
+      const annotateMetricResult = (metric: string, result: unknown): unknown => {
+        const hint = unitHints[metric];
+        if (!hint || !Array.isArray(result)) return result;
+        return result.map((series) => {
+          if (!series || typeof series !== 'object' || Array.isArray(series)) return series;
+          return {
+            ...series,
+            pimclawUnit: hint.unit,
+            pimclawUnitNote: hint.note,
+          };
+        });
+      };
 
       const grouped: Record<string, Record<string, unknown>> = {};
 
@@ -1427,9 +1465,12 @@ function buildPimClawTools() {
             if (rangeMinutes) {
               const start = nowSec - rangeMinutes * 60;
               const step = Math.max(15, Math.floor((rangeMinutes * 60) / 20));
-              engineResults[metric] = await prometheusClient!.queryRange(promql, start, nowSec, step);
+              engineResults[metric] = annotateMetricResult(
+                metric,
+                await prometheusClient!.queryRange(promql, start, nowSec, step),
+              );
             } else {
-              engineResults[metric] = await prometheusClient!.query(promql);
+              engineResults[metric] = annotateMetricResult(metric, await prometheusClient!.query(promql));
             }
           } catch (err) {
             engineResults[metric] = { error: err instanceof Error ? err.message : String(err) };

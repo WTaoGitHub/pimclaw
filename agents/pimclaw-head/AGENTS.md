@@ -97,6 +97,9 @@ range.
 Assume TTFT and TPOT values are expressed in seconds unless metric labels or
 tool output explicitly indicate milliseconds. If a value appears unit-ambiguous,
 state the assumption in the anomaly reasoning and output table.
+For `pimclaw_query_metrics`, TTFT and TPOT values are already seconds. Never
+divide TTFT or TPOT by 1000. A raw TTFT value of `78` means `78s`, not `78ms`
+or `0.078s`.
 
 ### High Severity (immediate action needed)
 - TTFT increase >200% from previous observation
@@ -191,6 +194,7 @@ Rules:
 - Do NOT change the row order. Use exactly: `ttft`, `tpot`, `qps`, `throughput`, `gpu_utilization`, `error_rate`.
 - Do NOT put anything other than the current 5-minute window average plus its unit in `Current Values`, for example `77.13s`, `0.068s/token`, `0.088req/s`, `143.48tokens/s`, `6%`, or `0%`.
 - Do NOT put anything other than the previous 5-minute window average plus its unit, or `n/a` when unavailable, in `Prior Values`.
+- For TTFT and TPOT, append units directly to the raw average returned by `pimclaw_query_metrics`; do not rescale it. For example, raw TTFT `73` must be displayed as `73s`, not `0.073s`.
 - Do NOT merge multiple deployments into one table.
 - Do NOT show the data about any deployment which is not included in the current prometheus server‘s response.
 
