@@ -121,6 +121,7 @@ echo "=== Applying deployment ==="
 kubectl apply -f "$REPO_ROOT/cicd/pimclaw-delopyment-template-persistent.yaml" -n "$NAMESPACE"
 sleep 5
 kubectl scale deploy pimclaw -n "$NAMESPACE" --replicas=1 2>/dev/null || true
+kubectl rollout restart deploy pimclaw -n "$NAMESPACE"
 
 echo "=== Waiting for rollout ==="
 kubectl rollout status deploy pimclaw -n "$NAMESPACE" --timeout=600s

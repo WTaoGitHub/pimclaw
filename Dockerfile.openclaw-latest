@@ -43,6 +43,7 @@ COPY --from=pimclaw-builder /build/pimclaw/docs/perfMCP/perfllm_mcp_server.py /a
 COPY --from=pimclaw-builder /build/python-deps /app/python-deps
 ENV PYTHONPATH=/app/python-deps
 
-RUN chown -R node:node /app/plugins/pimclaw /app/seed-openclaw-home /app/data/pimclaw /app/python-deps
+RUN ln -s /app /app/plugins/pimclaw/node_modules/openclaw \
+    && chown -R node:node /app/plugins/pimclaw /app/seed-openclaw-home /app/data/pimclaw /app/python-deps
 
 USER node

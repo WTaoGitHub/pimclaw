@@ -95,6 +95,60 @@ interface ToolDefinition {
   execute: (sessionId: string, params: Record<string, unknown>) => Promise<{ output: string }>;
 }
 
+type OpenClawToolContext = Record<string, unknown>;
+
+let pimclawService: OpenClawPluginService | null = null;
+let pimclawServiceStartPromise: Promise<void> | null = null;
+
+function getPimClawService(): OpenClawPluginService {
+  pimclawService ??= createPimClawService();
+  return pimclawService;
+}
+
+function defaultOpenClawStateDir(): string {
+  return process.env.OPENCLAW_STATE_DIR ?? path.join(process.env.HOME ?? '/home/node', '.openclaw');
+}
+
+function buildLazyServiceContext(
+  api: OpenClawPluginApi,
+  toolContext?: OpenClawToolContext,
+): OpenClawPluginServiceContext {
+  const stateDir =
+    typeof toolContext?.stateDir === 'string' ? toolContext.stateDir : defaultOpenClawStateDir();
+  const workspaceDir =
+    typeof toolContext?.workspaceDir === 'string'
+      ? toolContext.workspaceDir
+      : path.join(stateDir, 'workspaces', 'pimclaw-main');
+
+  return {
+    ...(toolContext ?? {}),
+    logger: api.logger,
+    stateDir,
+    workspaceDir,
+    config: pluginConfig,
+    runtime: api.runtime ?? pluginRuntime,
+    openclawApi: (toolContext as any)?.openclawApi ?? (api as any).openclawApi,
+  } as OpenClawPluginServiceContext;
+}
+
+async function ensurePimClawServiceStarted(
+  api: OpenClawPluginApi,
+  toolContext?: OpenClawToolContext,
+): Promise<void> {
+  if (registry && taskRecorder) return;
+
+  if (!pimclawServiceStartPromise) {
+    const ctx = buildLazyServiceContext(api, toolContext);
+    pimclawServiceStartPromise = Promise.resolve(getPimClawService().start(ctx))
+      .catch((error: unknown) => {
+        pimclawServiceStartPromise = null;
+        throw error;
+      });
+  }
+
+  await pimclawServiceStartPromise;
+}
+
 /**
  * Wrap a tool definition with hook governance.
  * Hooks run before/after tool execution but never block the pipeline on failure.
@@ -141,6 +195,19 @@ function withHooks(tool: ToolDefinition, hooks: ToolHook[]): ToolDefinition {
 
       throw err;
     }
+  };
+  return tool;
+}
+
+function withLazyServiceStart(
+  tool: ToolDefinition,
+  api: OpenClawPluginApi,
+  toolContext?: OpenClawToolContext,
+): ToolDefinition {
+  const originalExecute = tool.execute;
+  tool.execute = async (sessionId: string, params: Record<string, unknown>) => {
+    await ensurePimClawServiceStarted(api, toolContext);
+    return originalExecute(sessionId, params);
   };
   return tool;
 }
@@ -843,6 +910,11 @@ function createPimClawService(): OpenClawPluginService {
     id: 'pimclaw-components',
 
     async start(ctx: OpenClawPluginServiceContext) {
+      if (registry && taskRecorder) {
+        ctx.logger.info('[PimClaw] Components already started; skipping duplicate start');
+        return;
+      }
+
       ctx.logger.info('[PimClaw] Starting components…');
 
       // File-based rotating logger (wraps ctx.logger so lines go to both)
@@ -2285,13 +2357,16 @@ export default definePluginEntry({
   register(api: OpenClawPluginApi) {
     pluginConfig = (api.pluginConfig as Record<string, unknown> | undefined) ?? {};
     pluginRuntime = api.runtime;
-    api.registerService(createPimClawService());
+    api.registerService(getPimClawService());
 
     for (const toolFactory of buildPimClawTools()) {
       // Wrap each tool factory with hook governance
-      const wrappedFactory = () => {
+      const wrappedFactory = (toolContext?: unknown) => {
+        const context = toolContext && typeof toolContext === 'object'
+          ? toolContext as OpenClawToolContext
+          : undefined;
         const tool = toolFactory();
-        return withHooks(tool as ToolDefinition, toolHooks);
+        return withLazyServiceStart(withHooks(tool as ToolDefinition, toolHooks), api, context);
       };
       api.registerTool(wrappedFactory);
     }

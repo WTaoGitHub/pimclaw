@@ -71,7 +71,7 @@ spec:
       containers:
         - name: pimclaw
           image: 10.1.112.238:8443/baota/pimclaw-openclaw:latest-test
-          imagePullPolicy: IfNotPresent
+          imagePullPolicy: Always
           command:
             - openclaw
             - gateway

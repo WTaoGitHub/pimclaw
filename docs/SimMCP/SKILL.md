@@ -141,8 +141,9 @@ start_simulation_server(
 ```
 
 **Required Arguments:**
-- `model_path`: SGLang server model path
-- `hardware_name`: Simulation hardware name (must be registered)
+- `model_path`: model name (e.g., "Qwen/Qwen2.5-7B-Instruct").  
+- `hardware_name`: Simulation hardware name (must be registered, i.e., "H800")
+
 
 **Optional Arguments:**
 - `database_path`: Hardware performance database path (default: "/guangshi/yiyulong/PagodaSim/tair-kvcache/hisim/aic")
@@ -150,8 +151,7 @@ start_simulation_server(
 - `skip_warmup`: Skip server warmup (default: False)
 - `port`: SGLang service port (default: 8723)
 - `host`: Service host address (default: "0.0.0.0")
-- `model_name`: Aiconfigurator simulation model name (optional, derived from model_path if not specified)
-- `device_name`: Device name in performance database (optional, derived from hardware_name if not specified)
+- `device_name`: Device name in performance database (e.g., "h800_sxm", it comes from the depolyment information of the LLM model)
 - `database_mode`: Database mode: SILICON or SIMULATION (default: SILICON)
 - `prefill_scale_factor`: Prefill latency scale factor (default: 1.0)
 - `decode_scale_factor`: Decode latency scale factor (default: 1.0)

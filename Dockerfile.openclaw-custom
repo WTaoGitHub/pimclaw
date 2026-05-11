@@ -24,6 +24,7 @@ COPY --from=pimclaw-builder /build/pimclaw/AGENTS.md /app/extensions/pimclaw/AGE
 COPY --from=pimclaw-builder /build/pimclaw/dist /app/extensions/pimclaw/dist
 COPY --from=pimclaw-builder /build/pimclaw/node_modules /app/extensions/pimclaw/node_modules
 
-RUN chown -R node:node /app/extensions/pimclaw /home/node/.openclaw/workspaces
+RUN ln -s /app /app/extensions/pimclaw/node_modules/openclaw \
+    && chown -R node:node /app/extensions/pimclaw /home/node/.openclaw/workspaces
 
 USER node

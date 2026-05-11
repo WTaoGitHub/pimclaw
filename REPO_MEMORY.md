@@ -257,6 +257,7 @@ From `openclaw.plugin.json` configSchema:
 - `npm test` (`vitest`) has some environment-sensitive and stale test failures
 - The worktree is dirty — uncommitted changes under `cicd/`, `agents/`, `docs/`, `tmp/` (tmp/ has deleted files)
 - `cicd/openclaw.json` contains live credentials — treat carefully, never commit changes without review
+- Private Claude environment access convention: use `kubectl` commands; default namespace is `baota-playground` unless explicitly overridden
 - `agents/pimclaw-head/AGENTS.md` and `agents/pimclaw-planner/AGENTS.md` may not be identical to the corresponding sections in root `AGENTS.md` — check both before changing agent behavior
 - The `cicd/cron/jobs.json` is deleted in the dirty worktree; the K8s init container still copies it — possible cron seeding mismatch
 - The `openclaw-latest` container uses `http://host.docker.internal:29001/` to reach Prometheus (host bridges to `10.1.112.237:29000`)
