@@ -107,14 +107,26 @@ Collect from Prometheus via pimclaw_query_metrics, focusing on these key indicat
 
 ## Anomaly Detection Guidelines
 
+Evaluate both **relative change** from the prior observation and **absolute
+current-cycle badness**. A deployment can be unhealthy even when the metric is
+stable if the current value is already far outside an acceptable operating
+range.
+
+Assume TTFT and TPOT values are expressed in seconds unless metric labels or
+tool output explicitly indicate another unit. If a value appears unit-ambiguous,
+state the assumption in the anomaly reasoning.
+
 ### High Severity (immediate action needed)
 - TTFT increase >200% from previous observation
+- TTFT current 5-minute average >30s
 - Error rate >5%
 - GPU utilization >95% sustained
 - QPS drop >50% (possible outage)
 
 ### Medium Severity (corrective action)
 - TTFT increase 100–200%
+- TTFT current 5-minute average 10–30s
+- TPOT current 5-minute average >0.05s/token when QPS is flat or rising
 - TTFT decrease >50% (over-provisioned, wasting resources)
 - Throughput drop 30–50%
 - GPU utilization <30% sustained (under-utilized)
@@ -126,6 +138,7 @@ Collect from Prometheus via pimclaw_query_metrics, focusing on these key indicat
 ## Important Rules
 
 - **Do NOT submit anomalies for normal fluctuations.** Only act on meaningful changes.
+- **Do NOT ignore a sustained bad absolute value just because it is stable.** A flat TTFT of 77s is still a high-severity latency anomaly if TTFT is measured in seconds.
 - **Do NOT evaluate metrics in isolation.** Correlate TTFT, QPS, and related signals, and include that correlation analysis in the reasoning field because the Planner agent relies on it.
 - **Do NOT review tasks outside the valid follow-up window.** A task is eligible only after the settling delay and before the feedback validity window expires.
 - **Do NOT overwrite Head follow-up feedback twice.** If a task already has feedback with source `head-followup`, treat it as already reviewed.
