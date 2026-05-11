@@ -2360,6 +2360,7 @@ export default definePluginEntry({
     api.registerService(getPimClawService());
 
     for (const toolFactory of buildPimClawTools()) {
+      const toolName = toolFactory().name;
       // Wrap each tool factory with hook governance
       const wrappedFactory = (toolContext?: unknown) => {
         const context = toolContext && typeof toolContext === 'object'
@@ -2368,7 +2369,7 @@ export default definePluginEntry({
         const tool = toolFactory();
         return withLazyServiceStart(withHooks(tool as ToolDefinition, toolHooks), api, context);
       };
-      api.registerTool(wrappedFactory);
+      api.registerTool(wrappedFactory, { name: toolName });
     }
 
     api.logger.info('[PimClaw] Plugin registered (v2 hybrid architecture)');
