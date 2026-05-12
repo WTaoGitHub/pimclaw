@@ -253,6 +253,19 @@ const summaryMetrics: SummaryMetricName[] = [
   'error_rate',
 ];
 
+interface RuntimeAnomalyHint {
+  type: 'spike' | 'drop' | 'trend' | 'anomaly';
+  metricName: string;
+  currentValue: number;
+  previousValue?: number;
+  severity: 'high' | 'medium' | 'low';
+  deploymentName: string;
+  engine: InferenceEngine;
+  reason: string;
+  actionRequired: 'submit_anomaly';
+  source: 'pimclaw_query_metrics_guardrail';
+}
+
 function normalizeMetricNumber(value: number | null): number | null {
   if (value == null || Number.isNaN(value) || !Number.isFinite(value)) {
     return null;
@@ -284,6 +297,74 @@ function extractSummaryMetricValue(result: unknown): number | null {
 
   const total = numericValues.reduce((sum: number, value: number) => sum + value, 0);
   return total / numericValues.length;
+}
+
+function numericSeriesValues(series: unknown): number[] {
+  const values = (series as any)?.values;
+  if (!Array.isArray(values)) return [];
+  return values
+    .map((point: unknown) => {
+      const raw = Array.isArray(point) ? point[1] : null;
+      const num = typeof raw === 'string' || typeof raw === 'number' ? Number(raw) : NaN;
+      return Number.isFinite(num) ? num : null;
+    })
+    .filter((num: number | null): num is number => num != null);
+}
+
+function averageSeriesValues(series: unknown): number | null {
+  const nums = numericSeriesValues(series);
+  if (nums.length === 0) return null;
+  return nums.reduce((sum, num) => sum + num, 0) / nums.length;
+}
+
+function buildRuntimeAnomalyHints(
+  engine: InferenceEngine,
+  metric: string,
+  result: unknown,
+): RuntimeAnomalyHint[] {
+  if (!Array.isArray(result)) return [];
+  const hints: RuntimeAnomalyHint[] = [];
+
+  for (const series of result) {
+    const deploymentName = (series as any)?.metric?.model_name;
+    if (!deploymentName) continue;
+    const currentAverage = averageSeriesValues(series);
+    const values = numericSeriesValues(series);
+    const maxValue = values.length > 0 ? Math.max(...values) : null;
+    if (currentAverage == null || maxValue == null) continue;
+
+    if (metric === 'ttft') {
+      if (currentAverage > 30 || maxValue > 30) {
+        hints.push({
+          type: 'anomaly',
+          metricName: 'ttft',
+          currentValue: currentAverage,
+          severity: 'high',
+          deploymentName,
+          engine,
+          actionRequired: 'submit_anomaly',
+          source: 'pimclaw_query_metrics_guardrail',
+          reason:
+            `TTFT current 5-minute average is ${currentAverage.toFixed(2)}s and max observed TTFT is ${maxValue.toFixed(2)}s. The high-severity threshold is avg >30s or any observed point >30s. Submit an anomaly even if the value later recovers or matches prior observations.`,
+        });
+      } else if (currentAverage >= 10) {
+        hints.push({
+          type: 'anomaly',
+          metricName: 'ttft',
+          currentValue: currentAverage,
+          severity: 'medium',
+          deploymentName,
+          engine,
+          actionRequired: 'submit_anomaly',
+          source: 'pimclaw_query_metrics_guardrail',
+          reason:
+            `TTFT current 5-minute average is ${currentAverage.toFixed(2)}s, above the absolute medium-severity threshold of 10s. Submit an anomaly even if the value is stable or matches prior observations.`,
+        });
+      }
+    }
+  }
+
+  return hints;
 }
 
 function collectDeploymentNames(
@@ -1401,6 +1482,8 @@ function buildPimClawTools() {
       const deploymentName = params.deploymentName as string | undefined;
       const rangeMinutes = params.rangeMinutes as number | undefined;
       const nowSec = Math.floor(Date.now() / 1000);
+      const runtimeAnomalyHints: RuntimeAnomalyHint[] = [];
+      const autoSubmittedAnomalies: unknown[] = [];
       const unitHints: Record<string, { unit: string; note: string }> = {
         ttft: {
           unit: 'seconds',
@@ -1462,22 +1545,54 @@ function buildPimClawTools() {
           promql = injectLabels(promql, labels);
 
           try {
+            let queryResult: unknown;
             if (rangeMinutes) {
               const start = nowSec - rangeMinutes * 60;
               const step = Math.max(15, Math.floor((rangeMinutes * 60) / 20));
-              engineResults[metric] = annotateMetricResult(
-                metric,
-                await prometheusClient!.queryRange(promql, start, nowSec, step),
-              );
+              queryResult = await prometheusClient!.queryRange(promql, start, nowSec, step);
             } else {
-              engineResults[metric] = annotateMetricResult(metric, await prometheusClient!.query(promql));
+              queryResult = await prometheusClient!.query(promql);
             }
+            runtimeAnomalyHints.push(...buildRuntimeAnomalyHints(engine, metric, queryResult));
+            engineResults[metric] = annotateMetricResult(metric, queryResult);
           } catch (err) {
             engineResults[metric] = { error: err instanceof Error ? err.message : String(err) };
           }
         }
 
         grouped[engine] = engineResults;
+      }
+
+      if (runtimeAnomalyHints.length > 0 && anomalyReceiver) {
+        try {
+          const actionableEvents = runtimeAnomalyHints
+            .filter((hint) => hint.actionRequired === 'submit_anomaly')
+            .map((hint) => ({
+              type: hint.type,
+              metricName: hint.metricName,
+              currentValue: hint.currentValue,
+              previousValue: hint.previousValue,
+              severity: hint.severity,
+              deploymentName: hint.deploymentName,
+              reasoning: `[runtime guardrail] ${hint.reason}`,
+            }));
+          if (actionableEvents.length > 0) {
+            const validated = await anomalyReceiver.receive(actionableEvents);
+            autoSubmittedAnomalies.push(
+              ...validated.map((event) => ({
+                eventId: event.eventId,
+                taskId: event.taskId,
+                metricName: event.metricName,
+                deploymentName: event.deploymentName,
+                severity: event.severity,
+              })),
+            );
+          }
+        } catch (err) {
+          autoSubmittedAnomalies.push({
+            error: err instanceof Error ? err.message : String(err),
+          });
+        }
       }
 
       // Persist a single record with per-deployment flat metrics
@@ -1531,7 +1646,13 @@ function buildPimClawTools() {
         headSummaryStore.flush().catch(() => {});
       }
 
-      return { output: JSON.stringify(grouped) };
+      return {
+        output: JSON.stringify({
+          pimclawRuntimeAnomalyHints: runtimeAnomalyHints,
+          pimclawAutoSubmittedAnomalies: autoSubmittedAnomalies,
+          ...grouped,
+        }),
+      };
     },
   });
 

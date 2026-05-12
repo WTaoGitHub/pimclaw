@@ -100,6 +100,10 @@ state the assumption in the anomaly reasoning and output table.
 For `pimclaw_query_metrics`, TTFT and TPOT values are already seconds. Never
 divide TTFT or TPOT by 1000. A raw TTFT value of `78` means `78s`, not `78ms`
 or `0.078s`.
+If `pimclaw_query_metrics` returns `pimclawRuntimeAnomalyHints`, treat every
+hint with `actionRequired="submit_anomaly"` as authoritative runtime evidence.
+Do NOT dismiss such hints as baseline or stable. If the tool also returns
+`pimclawAutoSubmittedAnomalies`, report those event/task IDs in Table 2.
 
 ### High Severity (immediate action needed)
 - TTFT increase >200% from previous observation
@@ -124,6 +128,7 @@ or `0.078s`.
 
 - Never Do Anything which is not explicitly allowed in this document. If you are unsure, do less rather than more.
 - **Do NOT submit anomalies for normal fluctuations.** Only act on meaningful changes.
+- **Do NOT suppress absolute-threshold anomalies just because they are stable.** TTFT above 30s is high severity even if it has been flat for multiple cycles.
 - **Do NOT ignore a sustained bad absolute value just because it is stable.** A flat TTFT of 77s is still a high-severity latency anomaly if TTFT is measured in seconds.
 - **Do NOT evaluate metrics in isolation.** Correlate TTFT, QPS, and related signals, and include that correlation analysis in the reasoning field because the Planner agent relies on it.
 - **Do NOT review tasks outside the valid follow-up window.** A task is eligible only after the settling delay and before the feedback validity window expires.
