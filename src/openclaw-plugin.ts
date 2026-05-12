@@ -260,10 +260,20 @@ interface RuntimeAnomalyHint {
   previousValue?: number;
   severity: 'high' | 'medium' | 'low';
   deploymentName: string;
+  hardwareName?: string;
+  gpuType?: string;
   engine: InferenceEngine;
   reason: string;
   actionRequired: 'submit_anomaly';
   source: 'pimclaw_query_metrics_guardrail';
+}
+
+interface GpuHardwareInfo {
+  deploymentName: string;
+  gpuType: string;
+  hardware_name: string;
+  sourceMetric: string;
+  labels: Record<string, string>;
 }
 
 function normalizeMetricNumber(value: number | null): number | null {
@@ -328,6 +338,12 @@ function buildRuntimeAnomalyHints(
   for (const series of result) {
     const deploymentName = (series as any)?.metric?.model_name;
     if (!deploymentName) continue;
+    const hardwareName = typeof (series as any)?.hardware_name === 'string'
+      ? (series as any).hardware_name
+      : undefined;
+    const gpuType = typeof (series as any)?.pimclawGpuType === 'string'
+      ? (series as any).pimclawGpuType
+      : undefined;
     const currentAverage = averageSeriesValues(series);
     const values = numericSeriesValues(series);
     const maxValue = values.length > 0 ? Math.max(...values) : null;
@@ -341,6 +357,8 @@ function buildRuntimeAnomalyHints(
           currentValue: currentAverage,
           severity: 'high',
           deploymentName,
+          hardwareName,
+          gpuType,
           engine,
           actionRequired: 'submit_anomaly',
           source: 'pimclaw_query_metrics_guardrail',
@@ -354,6 +372,8 @@ function buildRuntimeAnomalyHints(
           currentValue: currentAverage,
           severity: 'medium',
           deploymentName,
+          hardwareName,
+          gpuType,
           engine,
           actionRequired: 'submit_anomaly',
           source: 'pimclaw_query_metrics_guardrail',
@@ -365,6 +385,78 @@ function buildRuntimeAnomalyHints(
   }
 
   return hints;
+}
+
+function normalizeHardwareName(gpuType: string): string {
+  const trimmed = gpuType.trim();
+  const withoutVendor = trimmed.replace(/^NVIDIA\s+/i, '').trim();
+  return withoutVendor || trimmed;
+}
+
+function extractGpuTypeFromLabels(labels: Record<string, string>): string | null {
+  return labels.modelName
+    ?? labels.gpu_type
+    ?? labels.gpuType
+    ?? labels.gpu_name
+    ?? labels.gpuName
+    ?? labels.device_name
+    ?? labels.deviceName
+    ?? labels.hardware_name
+    ?? labels.hardwareName
+    ?? null;
+}
+
+function buildGpuHardwareMap(results: unknown[], sourceMetric: string): Record<string, GpuHardwareInfo> {
+  const byDeployment: Record<string, GpuHardwareInfo> = {};
+  for (const result of results) {
+    const labels = (result as any)?.metric;
+    if (!labels || typeof labels !== 'object') {
+      continue;
+    }
+    const deploymentName = typeof labels.model_name === 'string'
+      ? labels.model_name
+      : typeof labels.model === 'string'
+        ? labels.model
+        : undefined;
+    const gpuType = extractGpuTypeFromLabels(labels as Record<string, string>);
+    if (!deploymentName || !gpuType) {
+      continue;
+    }
+    byDeployment[deploymentName] = {
+      deploymentName,
+      gpuType,
+      hardware_name: normalizeHardwareName(gpuType),
+      sourceMetric,
+      labels: labels as Record<string, string>,
+    };
+  }
+  return byDeployment;
+}
+
+function mergeGpuHardwareMaps(
+  target: Record<string, GpuHardwareInfo>,
+  source: Record<string, GpuHardwareInfo>,
+): void {
+  for (const [deploymentName, info] of Object.entries(source)) {
+    if (!target[deploymentName]) {
+      target[deploymentName] = info;
+    }
+  }
+}
+
+function annotateGpuHardware(result: unknown, gpuByDeployment: Record<string, GpuHardwareInfo>): unknown {
+  if (!Array.isArray(result)) return result;
+  return result.map((series) => {
+    if (!series || typeof series !== 'object' || Array.isArray(series)) return series;
+    const deploymentName = (series as any)?.metric?.model_name;
+    const gpuInfo = typeof deploymentName === 'string' ? gpuByDeployment[deploymentName] : undefined;
+    if (!gpuInfo) return series;
+    return {
+      ...series,
+      pimclawGpuType: gpuInfo.gpuType,
+      hardware_name: gpuInfo.hardware_name,
+    };
+  });
 }
 
 function collectDeploymentNames(
@@ -1269,7 +1361,7 @@ function buildPimClawTools() {
   const queryMetricsTool = () => ({
     name: 'pimclaw_query_metrics',
     description:
-      'Query Prometheus for inference metrics (TTFT, TPOT, QPS, throughput, GPU utilization, error rate) across all configured inference engines (vllm, sglang). Results are grouped by engine. Use rangeMinutes to get time-series data as [timestamp, value] pairs for trend analysis. TTFT and TPOT values are already in seconds; do not divide them by 1000. Called by the Head Agent every 5 minutes.',
+      'Query Prometheus for inference metrics (TTFT, TPOT, QPS, throughput, GPU utilization, error rate) and GPU hardware metadata across all configured inference engines (vllm, sglang). Results are grouped by engine. Use rangeMinutes to get time-series data as [timestamp, value] pairs for trend analysis. TTFT and TPOT values are already in seconds; do not divide them by 1000. Called by the Head Agent every 5 minutes.',
     parameters: {
       type: 'object' as const,
       properties: {
@@ -1357,10 +1449,57 @@ function buildPimClawTools() {
       };
 
       const grouped: Record<string, Record<string, unknown>> = {};
+      const gpuMetadataQueries: Record<string, string[]> = {
+        vllm: [
+          'vllm:gpu_info',
+          'vllm:kv_cache_usage_perc:with_gpu',
+          'vllm:num_requests_running:with_gpu',
+          'vllm:num_requests_waiting:with_gpu',
+        ],
+      };
 
       for (const engine of engines) {
         const promqlMap = getPromQLMap(engine);
         const engineResults: Record<string, unknown> = {};
+        const gpuByDeployment: Record<string, GpuHardwareInfo> = {};
+        const gpuInfoSeries: unknown[] = [];
+        const gpuQueries = gpuMetadataQueries[engine] ?? [];
+
+        for (const gpuPromqlBase of gpuQueries) {
+          const labels: Record<string, string> = { ...prometheusDefaultLabels };
+          if (deploymentName) {
+            labels['model_name'] = deploymentName;
+          }
+          const gpuPromql = injectLabels(gpuPromqlBase, labels);
+          try {
+            const gpuQueryResult = await prometheusClient!.query(gpuPromql);
+            gpuInfoSeries.push(
+              ...gpuQueryResult.map((series) => {
+                const gpuType = extractGpuTypeFromLabels(series.metric);
+                return {
+                  ...series,
+                  pimclawGpuType: gpuType ?? undefined,
+                  hardware_name: gpuType ? normalizeHardwareName(gpuType) : undefined,
+                  pimclawGpuInfoSource: gpuPromqlBase,
+                };
+              }),
+            );
+            mergeGpuHardwareMaps(
+              gpuByDeployment,
+              buildGpuHardwareMap(gpuQueryResult, gpuPromqlBase),
+            );
+          } catch (err) {
+            gpuInfoSeries.push({
+              metric: { __name__: gpuPromqlBase },
+              error: err instanceof Error ? err.message : String(err),
+              pimclawGpuInfoSource: gpuPromqlBase,
+            });
+          }
+        }
+        if (gpuInfoSeries.length > 0) {
+          engineResults.gpu_info = gpuInfoSeries;
+        }
+        engineResults.pimclawHardwareByDeployment = gpuByDeployment;
 
         for (const metric of requestedMetrics) {
           // Resolve PromQL: config override > engine-specific map
@@ -1386,6 +1525,7 @@ function buildPimClawTools() {
             } else {
               queryResult = await prometheusClient!.query(promql);
             }
+            queryResult = annotateGpuHardware(queryResult, gpuByDeployment);
             runtimeAnomalyHints.push(...buildRuntimeAnomalyHints(engine, metric, queryResult));
             engineResults[metric] = annotateMetricResult(metric, queryResult);
           } catch (err) {
@@ -1407,6 +1547,8 @@ function buildPimClawTools() {
               previousValue: hint.previousValue,
               severity: hint.severity,
               deploymentName: hint.deploymentName,
+              hardwareName: hint.hardwareName,
+              gpuType: hint.gpuType,
               reasoning: `[runtime guardrail] ${hint.reason}`,
             }));
           if (actionableEvents.length > 0) {
@@ -1441,9 +1583,12 @@ function buildPimClawTools() {
 
           // Build a flat entry per deployment
           for (const depName of deploymentNames) {
+            const hardwareInfo = (engineResults.pimclawHardwareByDeployment as Record<string, GpuHardwareInfo> | undefined)?.[depName];
             const entry: DeploymentMetrics = {
               deployments: depName,
               engine,
+              hardwareName: hardwareInfo?.hardware_name,
+              gpuType: hardwareInfo?.gpuType,
               ttft: 0, tpot: 0, qps: 0,
               throughput: 0, gpu_utilization: 0, error_rate: 0,
             };
@@ -1510,6 +1655,8 @@ function buildPimClawTools() {
               previousValue: { type: 'number' },
               severity: { type: 'string', enum: ['high', 'medium', 'low'] },
               deploymentName: { type: 'string' },
+              hardwareName: { type: 'string', description: 'Optional normalized runtime hardware name from pimclaw_query_metrics, for example "H800".' },
+              gpuType: { type: 'string', description: 'Optional raw GPU model label from Prometheus, for example "NVIDIA H800".' },
               reasoning: { type: 'string' },
             },
             required: ['type', 'metricName', 'currentValue', 'severity', 'deploymentName'],
@@ -2385,12 +2532,12 @@ function buildPimClawTools() {
   const simStartTool = simTool(
     'pimclaw_sim_start',
     'start_simulation_server',
-    'Start SGLang simulation server. Supply only model_path and hardware_name; use hardware_name "H800" when runtime hardware is unknown.',
+    'Start SGLang simulation server. Supply only model_path and hardware_name; use the anomaly hardwareName from pimclaw_query_metrics when present, otherwise use "H800".',
     {
       type: 'object' as const,
       properties: {
         model_path: { type: 'string', description: 'Model path. Use the exact LLM deployment name from the anomaly, for example "glm-5.1-fp8".' },
-        hardware_name: { type: 'string', description: 'Registered hardware name. Use "H800" by default because runtime hardware discovery is not available yet.' },
+        hardware_name: { type: 'string', description: 'Registered hardware name. Use the normalized hardwareName from pimclaw_query_metrics when present, otherwise use "H800".' },
       },
       required: ['model_path', 'hardware_name'],
     },

@@ -25,6 +25,8 @@ export interface AnomalyEvent {
   previousValue?: number;
   severity: 'high' | 'medium' | 'low';
   deploymentName: string;
+  hardwareName?: string;
+  gpuType?: string;
   reasoning?: string;
 }
 
@@ -213,6 +215,8 @@ export class AnomalyReceiver {
             metric: e.metricName,
             currentValue: e.currentValue,
             previousValue: e.previousValue,
+            hardwareName: e.hardwareName,
+            gpuType: e.gpuType,
             reasoning: e.reasoning,
           })),
         },

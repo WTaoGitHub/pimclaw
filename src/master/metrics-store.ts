@@ -11,6 +11,10 @@ export interface DeploymentMetrics {
   deployments: string;
   /** Inference engine (vllm or sglang) */
   engine: string;
+  /** Normalized runtime hardware name, for example H800 */
+  hardwareName?: string;
+  /** Raw GPU model label from Prometheus, for example NVIDIA H800 */
+  gpuType?: string;
   ttft: number;
   tpot: number;
   qps: number;

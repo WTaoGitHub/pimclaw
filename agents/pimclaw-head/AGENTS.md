@@ -49,7 +49,11 @@ deployments running on that engine:
     "qps": [...],
     "throughput": [...],
     "gpu_utilization": [...],
-    "error_rate": [...]
+    "error_rate": [...],
+    "gpu_info": [{ "metric": { "model_name": "llama-70b", "modelName": "NVIDIA H800", ... }, "value": [ts, "8"], "pimclawGpuType": "NVIDIA H800", "hardware_name": "H800" }],
+    "pimclawHardwareByDeployment": {
+      "llama-70b": { "gpuType": "NVIDIA H800", "hardware_name": "H800", "sourceMetric": "vllm:gpu_info" }
+    }
   },
   "sglang": {
     "ttft": [...],
@@ -62,8 +66,9 @@ When analyzing the response:
 1. **Iterate over each engine key** (e.g. `"vllm"`, `"sglang"`)
 2. For each engine, examine each metric's array of time-series results
 3. Each result has a `metric` object with labels (including `model_name` = deployment identifier)
-4. Empty arrays mean no deployments are running on that engine — skip them
-5. Compare metrics **per deployment** (use `model_name` label), not across engines
+4. `gpu_info` and `pimclawHardwareByDeployment` provide GPU hardware metadata when Prometheus exposes it; include `hardwareName` from `hardware_name` in anomaly events
+5. Empty arrays mean no deployments are running on that engine — skip them
+6. Compare metrics **per deployment** (use `model_name` label), not across engines
 
 For each deployment and metric:
 - Compute **Current Values** as the current 5-minute window average
@@ -256,6 +261,8 @@ If anomalies are detected, call pimclaw_submit_anomalies with an array of events
       "previousValue": 0,
       "severity": "high | medium | low",
       "deploymentName": "<deployment identifier>",
+      "hardwareName": "<optional normalized hardware name, e.g. H800>",
+      "gpuType": "<optional raw GPU type, e.g. NVIDIA H800>",
       "reasoning": "<your analysis of what's happening and why>"
     }
   ]

@@ -2,7 +2,7 @@
 
 ## Description
 
-Manages Hisim MCP server for hardware registration, SGLang simulation service control, and benchmark serving.
+Manages Hisim MCP server for SGLang simulation service control and benchmark serving.
 
 ## Usage
 
@@ -18,107 +18,25 @@ python -m hisim.api.mcp.server
 │                         Hisim Simulation Workflow                            │
 └─────────────────────────────────────────────────────────────────────────────┘
 
-    ┌──────────────┐     ┌──────────────────┐     ┌─────────────────────────┐
-    │   Register   │────▶│  Start Sim       │────▶│   Run Bench Serving    │
-    │   Hardware   │     │  Server          │     │   (Optional)           │
-    └──────────────┘     └──────────────────┘     └─────────────────────────┘
-           │                     │                          │
-           ▼                     ▼                          ▼
-    ┌──────────────┐     ┌──────────────────┐     ┌─────────────────────────┐
-    │ Validate HW  │     │ Launch SGLang    │     │ Test Inference         │
-    │ Specs        │     │ with Sim Config  │     │ Performance            │
-    └──────────────┘     └──────────────────┘     └─────────────────────────┘
+    ┌──────────────────┐     ┌─────────────────────────┐
+    │  Start Sim       │────▶│   Run Bench Serving    │
+    │  Server          │     │   (Optional)           │
+    └──────────────────┘     └─────────────────────────┘
+           │                          │
+           ▼                          ▼
+    ┌──────────────────┐     ┌─────────────────────────┐
+    │ Launch SGLang    │     │ Test Inference         │
+    │ with Sim Config  │     │ Performance            │
+    └──────────────────┘     └─────────────────────────┘
 
-Step 1: Register hardware (if not already registered)
+Step 1: Start simulation server with model + hardware + database
         ↓
-Step 2: Start simulation server with model + hardware + database
+Step 2: Run benchmark serving to test performance
         ↓
-Step 3: Run benchmark serving to test performance
-        ↓
-Step 4: Analyze results (throughput, latency, etc.)
+Step 3: Analyze results (throughput, latency, etc.)
 ```
 
 ## MCP Tools
-
-### Hardware Management
-
-#### `register_hardware`
-
-Register a hardware accelerator with performance specifications.
-
-```python
-register_hardware(
-    name="NVIDIA H800_SXM",
-    vendor="NVIDIA",
-    hbm_capacity_gb=80,
-    hbm_bandwidth_gb=3350,
-    fp64_tflops=1,
-    fp32_tflops=67,
-    fp16_tflops=335,
-    int8_tflops=335,
-    num_devices=8,
-    fp8_tflops=989,
-    bf16_tflops=335,
-    fp16_tensor_tflops=None,
-    fp32_tensor_tflops=None,
-    fp8_tensor_tflops=None,
-    int8_tensor_tflops=None,
-    bf16_tensor_tflops=None,
-    device_alias=["H800_SXM", "h800_sxm"],
-    inter_node_bandwidth_gb=64,
-    intra_node_bandwidth_gb=400,
-    ref="",
-)
-```
-
-**Arguments:**
-- `name`: Hardware name (e.g., 'NVIDIA H800_SXM') - required
-- `vendor`: Vendor name (e.g., 'NVIDIA') - required
-- `hbm_capacity_gb`: HBM memory capacity in GB - required
-- `hbm_bandwidth_gb`: HBM memory bandwidth in GB/s - required
-- `fp64_tflops`: FP64 performance in TFLOPS - required
-- `fp32_tflops`: FP32 performance in TFLOPS - required
-- `fp16_tflops`: FP16 performance in TFLOPS - required
-- `int8_tflops`: INT8 performance in TFLOPS - required
-- `num_devices`: Number of devices (default: 1)
-- `fp8_tflops`: FP8 performance in TFLOPS (optional)
-- `bf16_tflops`: BF16 performance in TFLOPS (optional)
-- `fp16_tensor_tflops`: FP16 Tensor Core performance in TFLOPS (optional)
-- `fp32_tensor_tflops`: FP32 Tensor Core performance in TFLOPS (optional)
-- `fp8_tensor_tflops`: FP8 Tensor Core performance in TFLOPS (optional)
-- `int8_tensor_tflops`: INT8 Tensor Core performance in TFLOPS (optional)
-- `bf16_tensor_tflops`: BF16 Tensor Core performance in TFLOPS (optional)
-- `device_alias`: List of device aliases (optional)
-- `inter_node_bandwidth_gb`: Inter-node bandwidth in GB/s (default: 64)
-- `intra_node_bandwidth_gb`: Intra-node bandwidth in GB/s (optional)
-- `ref`: Reference URL (default: "")
-
-#### `get_hardware`
-
-Get hardware info by name.
-
-```python
-get_hardware(name="NVIDIA H800_SXM")
-```
-
-#### `list_all_hardware`
-
-List all registered hardware accelerators.
-
-```python
-list_all_hardware()
-```
-
-#### `register_hardware_batch`
-
-Batch register multiple hardware accelerators.
-
-```python
-register_hardware_batch(specs=[
-    {"name": "H800_SXM", "vendor": "NVIDIA", ...},
-    {"name": "H100_SXM", "vendor": "NVIDIA", ...},
-])
-```
 
 ### Simulation Service Management
 
@@ -128,9 +46,8 @@ Start SGLang simulation service with hardware-aware configuration.
 
 ```python
 start_simulation_server(
-    model_path="/Qwen/Qwen2-7B-Instruct",
-    hardware_name = "H800",
-    device_name = "h800_sxm",
+    model_path="/models/Qwen2-7B-Instruct",
+    hardware_name = "NVIDIA H800_SXM",
     port=8723,
     skip_warmup=False,
     tp_size=1,
@@ -141,18 +58,18 @@ start_simulation_server(
 ```
 
 **Required Arguments:**
-- `model_path`: model path or name (e.g., "Qwen/Qwen2.5-7B-Instruct", the value must match a registered model on huggingface).  
-- `hardware_name`: Simulation hardware name (must be registered, i.e., "H800")
-
+- `model_path`: SGLang server model path
+- `hardware_name`: Simulation hardware name (must be available in the performance database)
 
 **Optional Arguments:**
-- `database_path`: Hardware performance database path (default: "/guangshi/yiyulong/PagodaSim/tair-kvcache/hisim/aic")
-- `config_path`: Path to existing simulation config JSON (optional)
+- `database_path`: Hardware performance database path (env variable `HISIM_PREDICTOR_DATABASE_PATH`)
+- `config_path`: Path to existing simulation config JSON (optional, generated automatically from arguments if not specified)
 - `skip_warmup`: Skip server warmup (default: False)
 - `port`: SGLang service port (default: 8723)
 - `host`: Service host address (default: "0.0.0.0")
-- `device_name`: Device name in performance database (e.g., "h800_sxm", it comes from the depolyment information of the LLM model)
-- `database_mode`: Database mode: SILICON or SIMULATION (default: SILICON)
+- `model_name`: Aiconfigurator simulation model name (optional, derived from model_path if not specified)
+- `device_name`: Device name in performance database (optional, derived from hardware_name if not specified)
+- `database_mode`: Database mode: SILICON, HYBRID, EMPIRICAL (default: SILICON). Use HYBRID if model data is unavailable in SILICON mode.
 - `prefill_scale_factor`: Prefill latency scale factor (default: 1.0)
 - `decode_scale_factor`: Decode latency scale factor (default: 1.0)
 - `xgb_model_path`: XGBoost model path (optional)
@@ -168,7 +85,6 @@ start_simulation_server(
 - `memory_read_bandwidth_gb`: Memory read bandwidth in GB/s (default: 16.0)
 - `memory_write_bandwidth_gb`: Memory write bandwidth in GB/s (default: 16.0)
 - `num_device_per_node`: Number of devices per node (default: 8)
-- `hardware_info_path`: Hardware info file path (optional, used to load hardware if not registered)
 - `auto_register_model`: Auto-register model from ModelScope/HuggingFace if not found (default: True)
 - `output_path`: Output generated simulation config file path (optional, default: /tmp/hisim/config.json)
 
@@ -223,71 +139,97 @@ is_simulation_server_running()
 
 Run benchmark serving to test inference performance. Requires simulation server to be running.
 
-**Dataset Types:**
-- `random`: Random token dataset (requires `random_input_len`, `random_output_len`)
-- `sharegpt`: ShareGPT dataset (requires `dataset_path`)
-- `hisim-collection`: HiSim collection dataset (requires `dataset_path`)
+**Tool Signature:**
+```python
+run_bench_serving(
+    backend: str,                    # Backend type (required)
+    base_url: str,                   # Server base URL (required)
+    model: str,                      # Model name or path (required)
+    dataset_name: str,               # Dataset type (required)
+    warmup_requests: int,            # Warmup request count (required)
+    extra_request_body: dict = None, # Additional benchmark params (optional)
+)
+```
 
+**Dataset Types:**
+- `random`: Random token dataset (use `extra_request_body` for `random_input_len`, `random_output_len`)
+- `sharegpt`: ShareGPT dataset (requires `dataset_path` in `extra_request_body`)
+- `hisim-collection`: HiSim collection dataset (requires `dataset_path` in `extra_request_body`)
+
+**Examples:**
 ```python
 # Example 1: Random dataset with default parameters
 run_bench_serving(
     backend="sglang",
+    base_url="http://127.0.0.1:8723",
     model="Qwen/Qwen2.5-7B-Instruct",
     dataset_name="random",
+    warmup_requests=0,
 )
 
 # Example 2: Random dataset with custom parameters
 run_bench_serving(
     backend="sglang",
+    base_url="http://127.0.0.1:8723",
     model="Qwen/Qwen2.5-7B-Instruct",
     dataset_name="random",
-    num_prompts=100,
-    random_input_len=512,
-    random_output_len=512,
-    random_range_ratio=0.5,
-    request_rate=10.0,
+    warmup_requests=0,
+    extra_request_body={
+        "num_prompts": 100,
+        "random_input_len": 512,
+        "random_output_len": 512,
+        "random_range_ratio": 0.5,
+        "request_rate": 10.0,
+    },
 )
 
-# Example 3: hisim-collection dataset
+# Example 3: ShareGPT dataset
 run_bench_serving(
     backend="sglang",
+    base_url="http://127.0.0.1:8723",
     model="Qwen/Qwen2.5-7B-Instruct",
+    dataset_name="sharegpt",
     warmup_requests=0,
-    dataset_name="hisim-collection",
-    dataset_path="/path/to/collection.jsonl",
+    extra_request_body={
+        "dataset_path": "ShareGPT_V3_unfiltered_cleaned_split.json",
+        "num_prompts": 100,
+    },
 )
 
 # Example 4: With output file and details
 run_bench_serving(
     backend="sglang",
+    base_url="http://127.0.0.1:8723",
     model="Qwen/Qwen2.5-7B-Instruct",
-    warmup_requests=0,
     dataset_name="random",
-    output_file="/path/to/results.jsonl",
-    output_details=True,
+    warmup_requests=0,
+    extra_request_body={
+        "num_prompts": 100,
+        "output_file": "/path/to/results.jsonl",
+        "output_details": True,
+    },
 )
 ```
 
 **Arguments:**
-- `model`: Model name or path, best as same as the model used in simulation server - required
-- `backend`: Backend type (sglang, vllm, lmdeploy, etc.) - default: "sglang"
-- `base_url`: Base URL of the server - default: "http://127.0.0.1:8723"
-- `dataset_name`: Dataset type (random, sharegpt, hisim-collection) - default: "random"
-- `dataset_path`: Path to dataset file (for sharegpt/hisim-collection, random dataset is not required)
-- `num_prompts`: Number of prompts (for random dataset)
-- `random_input_len`: Input token length (for random dataset)
-- `random_output_len`: Output token length (for random dataset)
-- `random_range_ratio`: Range ratio for random dataset
-- `request_rate`: Requests per second (inf = all at once) - default: inf
-- `max_concurrency`: Maximum concurrent requests
-- `seed`: Random seed - default: 1
-- `disable_tqdm`: Disable progress bar - default: False
-- `disable_stream`: Disable streaming mode - default: False
-- `disable_ignore_eos`: Disable ignoring EOS token - default: False
-- `extra_request_body`: Extra JSON body for requests - default: None
-- `warmup_requests`: Number of warmup requests - default: 0
-- `output_file`: Output file path for results - default: None
-- `output_details`: Include detailed results - default: False
+- `backend`: Backend type (sglang, vllm, lmdeploy, etc.) - required
+- `base_url`: Base URL of the server - required (e.g., `"http://127.0.0.1:8723"`)
+- `model`: Model name or path, should match the model used in simulation server - required
+- `dataset_name`: Dataset type (random, sharegpt, hisim-collection) - required
+- `warmup_requests`: Number of warmup requests (0 = skip warmup) - required
+- `extra_request_body`: Additional benchmark parameters as a JSON object (optional). Supports all
+  bench_serving CLI arguments. Commonly used keys:
+  - `num_prompts` (int, default=1000): Number of prompts
+  - `dataset_path` (str): Dataset file path (required for sharegpt/hisim-collection)
+  - `random_input_len` (int, default=1024): Input tokens per request (random dataset)
+  - `random_output_len` (int, default=1024): Output tokens per request (random dataset)
+  - `random_range_ratio` (float, default=0.0): Length variation ratio (random dataset)
+  - `request_rate` (float, default=inf): Requests per second (inf = send all at once)
+  - `max_concurrency` (int): Maximum concurrent requests
+  - `seed` (int, default=1): Random seed
+  - `disable_tqdm` (bool, default=False): Disable progress bar
+  - `output_file` (str): Output file path for results
+  - `output_details` (bool, default=False): Include detailed per-request results
 
 **Returns:**
 ```json
@@ -335,13 +277,38 @@ run_bench_serving(
 Preview dataset information without running benchmark.
 
 ```python
+# Example 1: Preview random dataset
+get_bench_serving_dataset_info(
+    dataset_name="random",
+    model="Qwen/Qwen2.5-7B-Instruct",
+    extra_request_body={
+        "num_prompts": 10,
+        "random_input_len": 512,
+        "random_output_len": 256,
+    },
+)
+
+# Example 2: Preview hisim-collection dataset
 get_bench_serving_dataset_info(
     dataset_name="hisim-collection",
-    dataset_path="/path/to/collection.jsonl",
     model="Qwen/Qwen2.5-7B-Instruct",
-    num_prompts=10,
+    extra_request_body={
+        "dataset_path": "/path/to/collection.jsonl",
+        "num_prompts": 10,
+    },
 )
 ```
+
+**Arguments:**
+- `dataset_name`: Dataset type (random, sharegpt, hisim-collection) - default: "random"
+- `model`: Model name or path for tokenizer
+- `extra_request_body`: Additional parameters as a JSON object (optional). Commonly used keys:
+  - `num_prompts` (int): Number of prompts to preview
+  - `dataset_path` (str): Dataset file path (required for sharegpt/hisim-collection)
+  - `random_input_len` (int, default=1024): Input tokens per request (random dataset)
+  - `random_output_len` (int, default=1024): Output tokens per request (random dataset)
+  - `random_range_ratio` (float, default=0.0): Length variation ratio (random dataset)
+  - `seed` (int, default=1): Random seed
 
 **Returns:**
 ```json
@@ -371,11 +338,11 @@ get_bench_serving_dataset_info(
                            │
     ┌──────────────────────┼──────────────────────┐
     ▼                      ▼                      ▼
-┌─────────────┐  ┌─────────────────┐  ┌──────────────────────┐
-│  Hardware   │  │  Simulation     │  │  Benchmark Serving  │
-│  Registry  │  │  Service        │  │                     │
-│            │  │  Manager        │  │  (run_bench_serving) │
-└─────────────┘  └─────────────────┘  └──────────────────────┘
+┌─────────────────┐  ┌─────────────────┐  ┌──────────────────────┐
+│  Simulation     │  │  Service        │  │  Benchmark Serving  │
+│  Config         │  │  Manager        │  │                     │
+│  Generator      │  │                 │  │  (run_bench_serving) │
+└─────────────────┘  └─────────────────┘  └──────────────────────┘
                            │
                            ▼
               ┌─────────────────────────┐
@@ -390,39 +357,29 @@ get_bench_serving_dataset_info(
 ### Example 1: Full Simulation Benchmark
 
 ```python
-# Step 1: Register hardware (one-time)
-register_hardware(
-    name="NVIDIA H800",
-    vendor="NVIDIA",
-    hbm_capacity_gb=80,
-    hbm_bandwidth_gb=3350,
-    fp64_tflops=1,
-    fp32_tflops=67,
-    fp16_tflops=335,
-    int8_tflops=335,
-)
-
-# Step 2: Start simulation server
+# Step 1: Start simulation server
 start_simulation_server(
     model_path="Qwen/Qwen2.5-7B-Instruct",
-    hardware_name="H800",
-    device_name="h800_sxm",
+    hardware_name="NVIDIA H800_SXM",
     port=8723,
+    database_mode="HYBRID",
 )
 
-# Step 3: Wait for server to be ready, then run benchmark
+# Step 2: Wait for server to be ready, then run benchmark
 run_bench_serving(
     backend="sglang",
     base_url="http://127.0.0.1:8723",
-    warmup_requests=0,
-    model="Qwen/Qwen2.5-7B-Instruct",
+    model="Qwen/Qwen3-8B",
     dataset_name="random",
-    num_prompts=100,
-    random_input_len=512,
-    random_output_len=512,
+    warmup_requests=0,
+    extra_request_body={
+        "num_prompts": 100,
+        "random_input_len": 512,
+        "random_output_len": 512,
+    },
 )
 
-# Step 4: Check results in output file or returned JSON
+# Step 3: Check results in output file or returned JSON
 ```
 
 ### Example 2: Using hisim-collection Dataset
@@ -431,45 +388,39 @@ run_bench_serving(
 # First, preview the dataset
 get_bench_serving_dataset_info(
     dataset_name="hisim-collection",
-    dataset_path="/your/path/to/collection.jsonl",
-    model="Qwen/Qwen2.5-7B-Instruct",
+    model="Qwen/Qwen3-8B",
+    extra_request_body={
+        "dataset_path": "/path/to/collection.jsonl",
+        "num_prompts": 10,
+    },
 )
 
 # Start server and run benchmark
 start_simulation_server(
-    model_path="Qwen/Qwen2.5-7B-Instruct",
-    hardware_name="NVIDIA H800",
-    database_path="/your/path/to/hardware.db",
+    model_path="Qwen/Qwen3-8B",
+    hardware_name="NVIDIA H800_SXM",
+    database_path="/path/to/hardware.db",
 )
 
 run_bench_serving(
     backend="sglang",
     base_url="http://127.0.0.1:8723",
-    model="Qwen/Qwen2.5-7B-Instruct",
+    model="Qwen/Qwen3-8B",
     dataset_name="hisim-collection",
-    dataset_path="/your/path/to/collection.jsonl",
-    request_rate=2.0,
+    warmup_requests=0,
+    extra_request_body={
+        "dataset_path": "/path/to/collection.jsonl",
+        "request_rate": 2.0,
+    },
 )
 ```
 
 ### Example 3: Multi-GPU with XGBoost Model
 
 ```python
-register_hardware(
-    name="NVIDIA H800",
-    vendor="NVIDIA",
-    hbm_capacity_gb=80,
-    hbm_bandwidth_gb=3350,
-    fp64_tflops=1,
-    fp32_tflops=67,
-    fp16_tflops=335,
-    int8_tflops=335,
-    num_devices=8,
-)
-
 start_simulation_server(
     model_path="Qwen/Qwen3-32B-FP8",
-    hardware_name="NVIDIA H800",
+    hardware_name="NVIDIA H800_SXM",
     database_path="/path/to/hardware.db",
     xgb_model_path="/path/to/xgb_models/qwen3_32b",
     tp_size=4,
@@ -485,9 +436,12 @@ run_bench_serving(
     base_url="http://127.0.0.1:8723",
     model="Qwen/Qwen3-32B-FP8",
     dataset_name="random",
-    num_prompts=50,
-    random_input_len=1024,
-    random_output_len=1024,
+    warmup_requests=0,
+    extra_request_body={
+        "num_prompts": 50,
+        "random_input_len": 1024,
+        "random_output_len": 1024,
+    },
 )
 ```
 

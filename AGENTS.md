@@ -73,7 +73,11 @@ deployments running on that engine:
     "qps": [...],
     "throughput": [...],
     "gpu_utilization": [...],
-    "error_rate": [...]
+    "error_rate": [...],
+    "gpu_info": [{ "metric": { "model_name": "llama-70b", "modelName": "NVIDIA H800", ... }, "value": [ts, "8"], "pimclawGpuType": "NVIDIA H800", "hardware_name": "H800" }],
+    "pimclawHardwareByDeployment": {
+      "llama-70b": { "gpuType": "NVIDIA H800", "hardware_name": "H800", "sourceMetric": "vllm:gpu_info" }
+    }
   },
   "sglang": {
     "ttft": [...],
@@ -86,8 +90,9 @@ When analyzing the response:
 1. **Iterate over each engine key** (e.g. `"vllm"`, `"sglang"`)
 2. For each engine, examine each metric's array of time-series results
 3. Each result has a `metric` object with labels (including `model_name` = deployment identifier)
-4. Empty arrays mean no deployments are running on that engine — skip them
-5. Compare metrics **per deployment** (use `model_name` label), not across engines
+4. `gpu_info` and `pimclawHardwareByDeployment` provide GPU hardware metadata when Prometheus exposes it; use `hardware_name` as the simulation `hardware_name`
+5. Empty arrays mean no deployments are running on that engine — skip them
+6. Compare metrics **per deployment** (use `model_name` label), not across engines
 
 For each deployment and metric:
 - Compute **Current Values** as the current 5-minute window average
@@ -159,6 +164,7 @@ Do NOT dismiss such hints as baseline or stable. If the tool also returns
 - **Do NOT submit new anomalies before checking task capacity.** Call pimclaw_task_counts first, and if there are more than 50 pending tasks, do not submit additional anomalies.
 - **Do NOT invent task outcomes from stale metrics.** If the review window expired, report that state in the summary instead of submitting feedback.
 - **Do NOT submit vague anomaly events.** Include the deployment name, actual metric values, and your reasoning in each anomaly event.
+- **Do NOT drop runtime hardware metadata.** When `pimclaw_query_metrics` returns `hardware_name` or `pimclawHardwareByDeployment` for a deployment, include `hardwareName` and `gpuType` in the anomaly event so Planner can use the correct simulation hardware.
 - **Do NOT suggest specific configs.** That's the Planner's job. Just describe what's wrong and how severe it is.
 - **Do NOT deviate from the fixed summary format below.** Do not invent alternate headings, prose summaries, bullet summaries, or different table shapes.
 
@@ -276,6 +282,8 @@ If anomalies are detected, call pimclaw_submit_anomalies with an array of events
       "previousValue": 0,
       "severity": "high | medium | low",
       "deploymentName": "<deployment identifier>",
+      "hardwareName": "<optional normalized hardware name, e.g. H800>",
+      "gpuType": "<optional raw GPU type, e.g. NVIDIA H800>",
       "reasoning": "<your analysis of what's happening and why>"
     }
   ]
@@ -414,8 +422,9 @@ via the Hisim MCP server. Available tools:
 **Simulation server:**
 - `pimclaw_sim_start` — start simulation server with exactly two parameters:
   `model_path` and `hardware_name`. Set `model_path` to the exact LLM deployment
-  name from the anomaly. Set `hardware_name` to `H800` by default because runtime
-  hardware discovery is not available yet. Ignore all optional start parameters.
+  name from the anomaly. Set `hardware_name` to the anomaly event's
+  `hardwareName` when present; otherwise use `H800` as the default. Ignore all
+  optional start parameters.
 - `pimclaw_sim_stop` — stop simulation server
 - `pimclaw_sim_status` — check if simulation server is running
 
@@ -431,11 +440,12 @@ via the Hisim MCP server. Available tools:
 1. Call `pimclaw_sim_list_hardware` to check if the target hardware is registered
 2. If not registered, call `pimclaw_sim_register_hardware` with the hardware specs
 3. Set `model_path` to the exact LLM deployment name from the anomaly, for example `glm-5.1-fp8`
-4. Call `pimclaw_sim_start` with exactly `{ "model_path": "<deployment name>", "hardware_name": "H800" }`
-5. Call `pimclaw_sim_benchmark` with representative workload parameters
-6. Record the results (TTFT, TPOT, throughput)
-7. Call `pimclaw_sim_stop` to release resources
-8. Repeat steps 3-7 for each candidate config, then compare results
+4. Set `hardware_name` to the anomaly event's `hardwareName`, or `H800` if it is absent
+5. Call `pimclaw_sim_start` with exactly `{ "model_path": "<deployment name>", "hardware_name": "<hardwareName or H800>" }`
+6. Call `pimclaw_sim_benchmark` with representative workload parameters
+7. Record the results (TTFT, TPOT, throughput)
+8. Call `pimclaw_sim_stop` to release resources
+9. Repeat steps 3-8 for each candidate config, then compare results
 
 ### Web Search — Known Issues & Solutions (web_search)
 Search for known issues, best practices, or vendor advisories using the
@@ -484,10 +494,11 @@ to determine the right configuration.
 4. **Simulate candidates.** For each candidate config:
   a. Use the earlier `pimclaw_sim_list_hardware` probe result to verify Simulator MCP availability, and call it again only if you need fresh hardware state
    b. Set `model_path` to the exact LLM deployment name from the anomaly, for example `glm-5.1-fp8`
-   c. Call `pimclaw_sim_start` with exactly two parameters: `model_path` and `hardware_name`, using `hardware_name: "H800"`
-   d. Call `pimclaw_sim_benchmark` with workload matching the anomaly's QPS/load
-   e. Record mean_ttft_ms, mean_tpot_ms, output_throughput from the results
-   f. Call `pimclaw_sim_stop` before testing the next candidate
+   c. Set `hardware_name` to the anomaly event's `hardwareName`, or `H800` if it is absent
+   d. Call `pimclaw_sim_start` with exactly two parameters: `model_path` and `hardware_name`
+   e. Call `pimclaw_sim_benchmark` with workload matching the anomaly's QPS/load
+   f. Record mean_ttft_ms, mean_tpot_ms, output_throughput from the results
+   g. Call `pimclaw_sim_stop` before testing the next candidate
    Compare predicted TTFT, TPOT, throughput across all candidates.
   - You may do this step only if the earlier Simulator MCP probe succeeded.
   - If any required simulation call fails, returns an error, or produces no usable benchmark result, set `simulationResults` to `UNAVAILABLE: <reason>` and treat subsequent planning as degraded for Simulator MCP.
@@ -532,7 +543,7 @@ Call pimclaw_plan_task:
 - **Do NOT continue calling Perf MCP as if it were healthy after a failed availability probe.** Treat it as `UNAVAILABLE` for the rest of the run.
 - **Do NOT submit a plan before simulating each candidate.** Use pimclaw_sim_start → pimclaw_sim_benchmark → pimclaw_sim_stop for every candidate, and do not deploy unvalidated configs.
 - **Do NOT transform the simulation model path.** `model_path` MUST be the exact LLM deployment name from the anomaly, for example `glm-5.1-fp8`.
-- **Do NOT pass optional parameters to pimclaw_sim_start.** It MUST include only `model_path` and `hardware_name`; use `hardware_name` = `H800` by default.
+- **Do NOT pass optional parameters to pimclaw_sim_start.** It MUST include only `model_path` and `hardware_name`; use anomaly `hardwareName` when available, otherwise use `H800`.
 - **Do NOT claim simulation results without actual tool output.** If simulation cannot run, fails, or returns no usable data, `simulationResults` MUST explicitly begin with `UNAVAILABLE:` and explain why.
 - **Do NOT continue calling Simulator MCP as if it were healthy after a failed availability probe.** Treat it as `UNAVAILABLE` for the rest of the run.
 - **Do NOT leave the simulator running between candidates.** Call pimclaw_sim_stop after each benchmark run before starting the next candidate.
