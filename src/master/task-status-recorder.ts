@@ -115,10 +115,10 @@ export class TaskStatusRecorder {
       const now = new Date();
       let expiredCount = 0;
       for (const [id, task] of Object.entries(loadedTasks)) {
-        // Mark ready tasks as expired if older than 1 min
+        // Mark ready tasks as expired if they have waited in ready for >1 min
         if (
           task.status === 'ready' &&
-          now.getTime() - new Date(task.createdAt).getTime() > 60000
+          now.getTime() - new Date(task.statusModifiedAt).getTime() > 60000
         ) {
           task.status = 'expired';
           task.statusModifiedAt = now;

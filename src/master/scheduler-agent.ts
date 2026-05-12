@@ -134,11 +134,12 @@ export class SchedulerAgent extends BaseAgent {
   private async scheduleTask(task: Task): Promise<void> {
     try {
       // Check if task has expired while waiting
+      const readyAgeMs = new Date().getTime() - new Date(task.statusModifiedAt).getTime();
       if (
         task.status === 'ready' &&
-        new Date().getTime() - new Date(task.createdAt).getTime() > 60000
+        readyAgeMs > 60000
       ) {
-        this.debug('task expired while waiting', { taskId: task.taskId, ageMs: new Date().getTime() - new Date(task.createdAt).getTime() });
+        this.debug('task expired while waiting', { taskId: task.taskId, ageMs: readyAgeMs });
         await this.taskRecorder.updateTaskStatus(task.taskId, 'expired');
         return;
       }

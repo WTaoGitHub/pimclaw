@@ -369,11 +369,11 @@ describe('TaskStatusRecorder', () => {
   });
 
   it('should mark stale ready tasks as expired on initialize', async () => {
-    // Create an old ready task (created 2 minutes ago)
+    // Create a task that has been waiting in ready for 2 minutes.
     const oldTask = {
       taskId: uuidv4(),
       status: 'ready' as const,
-      createdAt: new Date(Date.now() - 2 * 60 * 1000),
+      createdAt: new Date(Date.now() - 5 * 60 * 1000),
       statusModifiedAt: new Date(Date.now() - 2 * 60 * 1000),
       priority: 'medium' as const,
       llmDeploymentName: 'old-deployment',
@@ -393,6 +393,31 @@ describe('TaskStatusRecorder', () => {
 
     const task = newRecorder.getTask(oldTask.taskId);
     expect(task?.status).toBe('expired');
+  });
+
+  it('should not expire a ready task that was created long ago but became ready recently', async () => {
+    const recentlyReadyTask = {
+      taskId: uuidv4(),
+      status: 'ready' as const,
+      createdAt: new Date(Date.now() - 5 * 60 * 1000),
+      statusModifiedAt: new Date(),
+      priority: 'medium' as const,
+      llmDeploymentName: 'recent-ready-deployment',
+      taskType: 'scale-up',
+      taskData: {},
+      retryCount: 0,
+      maxRetries: 3,
+    };
+
+    await recorder.createTask(recentlyReadyTask);
+    await recorder.persist();
+
+    const newRecorder = new TaskStatusRecorder();
+    (newRecorder as any).storagePath = testDir;
+    await newRecorder.initialize();
+
+    const task = newRecorder.getTask(recentlyReadyTask.taskId);
+    expect(task?.status).toBe('ready');
   });
 
   it('should reset task for retry', async () => {
