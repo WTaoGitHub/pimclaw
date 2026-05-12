@@ -1265,173 +1265,6 @@ function createPimClawService(): OpenClawPluginService {
 // ─── Tool builders ─────────────────────────────────────────────────────────
 
 function buildPimClawTools() {
-  // ── Hugging Face model discovery ────────────────────────────────────────
-  const getHgModelsTool = () => ({
-    name: 'pim_get_hf_models',
-    description:
-      'Search Hugging Face models via the public model catalog. Use this to discover candidate model IDs, tasks, tags, downloads, and likes before planning deployment configs.',
-    parameters: {
-      type: 'object' as const,
-      properties: {
-        search: {
-          type: 'string',
-          description: 'Free-text search query, for example "qwen3", "glm", or "text-generation".',
-        },
-        author: {
-          type: 'string',
-          description: 'Optional Hugging Face author or organization filter, for example "Qwen" or "meta-llama".',
-        },
-        task: {
-          type: 'string',
-          description: 'Optional pipeline task filter, for example "text-generation" or "text-generation-inference".',
-        },
-        tags: {
-          type: 'array',
-          items: { type: 'string' },
-          description: 'Optional model tags to filter by.',
-        },
-        sort: {
-          type: 'string',
-          enum: ['downloads', 'likes', 'lastModified', 'createdAt', 'modelId'],
-          description: 'Sort field. Defaults to downloads.',
-        },
-        direction: {
-          type: 'string',
-          enum: ['asc', 'desc'],
-          description: 'Sort direction. Defaults to desc.',
-        },
-        limit: {
-          type: 'number',
-          description: 'Maximum number of models to return. Defaults to 10, maximum 50.',
-        },
-      },
-    },
-    async execute(sessionId: string, params: Record<string, unknown>) {
-      const startedAt = Date.now();
-      const invocationId = uuidv4();
-      const limit = Math.min(Math.max(Number(params.limit ?? 10) || 10, 1), 50);
-      const buildModelsUrl = (baseUrl: string) => {
-        const url = new URL('/api/models', baseUrl);
-        url.searchParams.set('limit', String(limit));
-        url.searchParams.set('full', 'false');
-        url.searchParams.set('sort', typeof params.sort === 'string' ? params.sort : 'downloads');
-        url.searchParams.set('direction', params.direction === 'asc' ? '1' : '-1');
-
-        if (typeof params.search === 'string' && params.search.trim()) {
-          url.searchParams.set('search', params.search.trim());
-        }
-        if (typeof params.author === 'string' && params.author.trim()) {
-          url.searchParams.set('author', params.author.trim());
-        }
-        if (typeof params.task === 'string' && params.task.trim()) {
-          url.searchParams.append('filter', params.task.trim());
-        }
-        if (Array.isArray(params.tags)) {
-          for (const tag of params.tags) {
-            if (typeof tag === 'string' && tag.trim()) {
-              url.searchParams.append('filter', tag.trim());
-            }
-          }
-        }
-        return url;
-      };
-
-      const endpoints = [
-        { label: 'huggingface', baseUrl: 'https://huggingface.co' },
-        { label: 'hf-mirror', baseUrl: 'https://hf-mirror.com' },
-      ];
-
-      pluginLogger?.debug('[Planner:HgModels] pim_get_hf_models invoked', {
-        invocationId,
-        sessionId,
-        search: params.search,
-        author: params.author,
-        task: params.task,
-        tags: params.tags,
-        limit,
-      });
-
-      try {
-        let payload: unknown;
-        let endpointUsed = endpoints[0];
-        const errors: string[] = [];
-        for (const endpoint of endpoints) {
-          const url = buildModelsUrl(endpoint.baseUrl);
-          try {
-            const response = await fetch(url, {
-              headers: { accept: 'application/json' },
-              signal: AbortSignal.timeout(10_000),
-            });
-            if (!response.ok) {
-              throw new Error(`${response.status} ${response.statusText}`);
-            }
-            payload = await response.json();
-            endpointUsed = endpoint;
-            break;
-          } catch (fetchErr) {
-            const cause =
-              fetchErr instanceof Error && (fetchErr as any).cause
-                ? ` (${(fetchErr as any).cause.code ?? (fetchErr as any).cause.message})`
-                : '';
-            errors.push(`${endpoint.label}: ${fetchErr instanceof Error ? fetchErr.message : String(fetchErr)}${cause}`);
-          }
-        }
-        if (!payload) {
-          throw new Error(`Hugging Face model API unavailable: ${errors.join('; ')}`);
-        }
-        const models = Array.isArray(payload) ? payload : [];
-        const compactModels = models.map((model: any) => ({
-          modelId: model.modelId ?? model.id,
-          author: model.author,
-          pipelineTag: model.pipeline_tag,
-          tags: Array.isArray(model.tags) ? model.tags.slice(0, 20) : [],
-          downloads: model.downloads,
-          likes: model.likes,
-          private: model.private,
-          gated: model.gated,
-          lastModified: model.lastModified,
-          url: model.modelId ? `https://huggingface.co/${model.modelId}` : undefined,
-        }));
-
-        pluginLogger?.debug('[Planner:HgModels] pim_get_hf_models completed', {
-          invocationId,
-          sessionId,
-          durationMs: Date.now() - startedAt,
-          count: compactModels.length,
-        });
-
-        return {
-          output: JSON.stringify({
-            source: 'https://huggingface.co/models',
-            endpoint: endpointUsed.baseUrl,
-            query: {
-              search: params.search ?? null,
-              author: params.author ?? null,
-              task: params.task ?? null,
-              tags: Array.isArray(params.tags) ? params.tags : [],
-              sort: typeof params.sort === 'string' ? params.sort : 'downloads',
-              direction: params.direction === 'asc' ? 'asc' : 'desc',
-              limit,
-            },
-            models: compactModels,
-          }),
-        };
-      } catch (err) {
-        pluginLogger?.debug('[Planner:HgModels] pim_get_hf_models failed', {
-          invocationId,
-          sessionId,
-          durationMs: Date.now() - startedAt,
-          error: err instanceof Error ? err.message : String(err),
-        });
-        return {
-          output: JSON.stringify({
-            error: err instanceof Error ? err.message : String(err),
-          }),
-        };
-      }
-    },
-  });
-
   // ── Prometheus Metrics Tool (Phase 1, Step 3) ──────────────────────────
   const queryMetricsTool = () => ({
     name: 'pimclaw_query_metrics',
@@ -2552,38 +2385,12 @@ function buildPimClawTools() {
   const simStartTool = simTool(
     'pimclaw_sim_start',
     'start_simulation_server',
-    'Start SGLang simulation server with hardware-aware configuration. Must register hardware first.',
+    'Start SGLang simulation server. Supply only model_path and hardware_name; use hardware_name "H800" when runtime hardware is unknown.',
     {
       type: 'object' as const,
       properties: {
-        model_path: { type: 'string', description: 'Model path (e.g. "Qwen/Qwen2.5-7B-Instruct")' },
-        hardware_name: { type: 'string', description: 'Registered hardware name (e.g. "NVIDIA H800")' },
-        database_path: { type: 'string', description: 'Hardware performance database path (optional; HiSim has a default)' },
-        config_path: { type: 'string', description: 'Path to existing simulation config JSON' },
-        port: { type: 'number', description: 'Service port (default: 8723)' },
-        host: { type: 'string', description: 'Service host address (default: "0.0.0.0")' },
-        model_name: { type: 'string', description: 'Aiconfigurator simulation model name, derived from model_path if omitted' },
-        device_name: { type: 'string', description: 'Device name in performance database, derived from hardware_name if omitted' },
-        tp_size: { type: 'number', description: 'Tensor parallelism size' },
-        ep_size: { type: 'number', description: 'Expert parallelism size' },
-        dp_size: { type: 'number', description: 'Data parallelism size' },
-        data_type: { type: 'string', description: 'Data type: FP16, FP32, BF16, FP8, INT8' },
-        kv_cache_data_type: { type: 'string', description: 'KV cache data type (default: FP16)' },
-        prefill_scale_factor: { type: 'number', description: 'Prefill latency scale factor' },
-        decode_scale_factor: { type: 'number', description: 'Decode latency scale factor' },
-        database_mode: { type: 'string', description: 'SILICON or SIMULATION' },
-        xgb_model_path: { type: 'string', description: 'XGBoost model path for prediction' },
-        backend_name: { type: 'string', description: 'Backend name (default: "sglang")' },
-        backend_version: { type: 'string', description: 'Backend version (default: "0.5.9")' },
-        disk_read_bandwidth_gb: { type: 'number', description: 'Disk read bandwidth in GB/s' },
-        disk_write_bandwidth_gb: { type: 'number', description: 'Disk write bandwidth in GB/s' },
-        memory_read_bandwidth_gb: { type: 'number', description: 'Memory read bandwidth in GB/s' },
-        memory_write_bandwidth_gb: { type: 'number', description: 'Memory write bandwidth in GB/s' },
-        num_device_per_node: { type: 'number', description: 'Number of devices per node (default: 8)' },
-        hardware_info_path: { type: 'string', description: 'Hardware info file path used to load hardware if not registered' },
-        auto_register_model: { type: 'boolean', description: 'Auto-register model from ModelScope/HuggingFace if not found (default: true)' },
-        output_path: { type: 'string', description: 'Output generated simulation config file path (default: /tmp/hisim/config.json)' },
-        skip_warmup: { type: 'boolean', description: 'Skip server warmup (default: false)' },
+        model_path: { type: 'string', description: 'Model path. Use the exact LLM deployment name from the anomaly, for example "glm-5.1-fp8".' },
+        hardware_name: { type: 'string', description: 'Registered hardware name. Use "H800" by default because runtime hardware discovery is not available yet.' },
       },
       required: ['model_path', 'hardware_name'],
     },
@@ -2656,7 +2463,6 @@ function buildPimClawTools() {
     planTaskTool,
     routeTaskTool,
     queryMetricsTool,
-    getHgModelsTool,
     queryPerfllmTool,
     getPerfllmSchemaTool,
     simRegisterHardwareTool,

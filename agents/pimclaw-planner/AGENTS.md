@@ -53,25 +53,6 @@ Do not use task history to:
 - infer fresh deployment health across unrelated deployments
 - submit follow-up plans automatically without a new anomaly payload
 
-### Hugging Face Model Discovery (pim_get_hf_models)
-Use `pim_get_hf_models` to search [Hugging Face models](https://huggingface.co/models)
-when you need model identifiers, task tags, popularity signals, or candidate
-model variants before querying historical performance data or planning a config.
-The tool queries the Hugging Face model API and may fall back to `hf-mirror.com`
-when `huggingface.co` is unreachable from the runtime.
-
-Parameters:
-- `search` — free-text search query, for example `"qwen3"`, `"glm"`, or `"text-generation"`
-- `author` — optional Hugging Face author or organization, for example `"Qwen"` or `"meta-llama"`
-- `task` — optional pipeline task, for example `"text-generation"`
-- `tags` — optional array of Hugging Face model tags
-- `sort` — one of `downloads`, `likes`, `lastModified`, `createdAt`, or `modelId`
-- `direction` — `desc` or `asc`
-- `limit` — max rows to return, default 10 and maximum 50
-
-Use this tool as discovery context only. It does not replace Perf MCP historical
-performance evidence or Simulator MCP validation.
-
 ### Perf MCP — Historical Performance Data (pimclaw_query_perfllm / pimclaw_get_perfllm_schema)
 Query past deployment configurations and their measured performance using
 the `pimclaw_query_perfllm` tool. Use `pimclaw_get_perfllm_schema` first
@@ -102,9 +83,10 @@ via the Hisim MCP server. Available tools:
   tensor TFLOPS fields, device aliases, etc.)
 
 **Simulation server:**
-- `pimclaw_sim_start` — start simulation server (model_path, hardware_name,
-  optional database_path, optional device_name, port default 8723, tp_size, dp_size,
-  data_type: FP16/BF16/FP8/INT8, etc.)
+- `pimclaw_sim_start` — start simulation server with exactly two parameters:
+  `model_path` and `hardware_name`. Set `model_path` to the exact LLM deployment
+  name from the anomaly. Set `hardware_name` to `H800` by default because runtime
+  hardware discovery is not available yet. Ignore all optional start parameters.
 - `pimclaw_sim_stop` — stop simulation server
 - `pimclaw_sim_status` — check if simulation server is running
 
@@ -119,11 +101,12 @@ via the Hisim MCP server. Available tools:
 **Simulation workflow:**
 1. Call `pimclaw_sim_list_hardware` to check if the target hardware is registered
 2. If not registered, call `pimclaw_sim_register_hardware` with the hardware specs
-3. Call `pimclaw_sim_start` with the candidate config (model, hardware, tp_size, data_type, etc.)
-4. Call `pimclaw_sim_benchmark` with representative workload parameters
-5. Record the results (TTFT, TPOT, throughput)
-6. Call `pimclaw_sim_stop` to release resources
-7. Repeat steps 3-6 for each candidate config, then compare results
+3. Set `model_path` to the exact LLM deployment name from the anomaly, for example `glm-5.1-fp8`
+4. Call `pimclaw_sim_start` with exactly `{ "model_path": "<deployment name>", "hardware_name": "H800" }`
+5. Call `pimclaw_sim_benchmark` with representative workload parameters
+6. Record the results (TTFT, TPOT, throughput)
+7. Call `pimclaw_sim_stop` to release resources
+8. Repeat steps 3-7 for each candidate config, then compare results
 
 ### Web Search — Known Issues & Solutions (web_search)
 Search for known issues, best practices, or vendor advisories using the
@@ -183,10 +166,11 @@ to determine the right configuration.
 
 6. **Simulate candidates.** For each candidate config:
    a. Use the earlier `pimclaw_sim_list_hardware` probe result to verify Simulator MCP availability, and call it again only if you need fresh hardware state
-   b. Call `pimclaw_sim_start` with the candidate's model, hardware, tp_size, data_type
-   c. Call `pimclaw_sim_benchmark` with workload matching the anomaly's QPS/load
-   d. Record mean_ttft_ms, mean_tpot_ms, output_throughput from the results
-   e. Call `pimclaw_sim_stop` before testing the next candidate
+   b. Set `model_path` to the exact LLM deployment name from the anomaly, for example `glm-5.1-fp8`
+   c. Call `pimclaw_sim_start` with exactly two parameters: `model_path` and `hardware_name`, using `hardware_name: "H800"`
+   d. Call `pimclaw_sim_benchmark` with workload matching the anomaly's QPS/load
+   e. Record mean_ttft_ms, mean_tpot_ms, output_throughput from the results
+   f. Call `pimclaw_sim_stop` before testing the next candidate
    Compare predicted TTFT, TPOT, throughput across all candidates.
    - You may do this step only if the earlier Simulator MCP probe succeeded.
    - If any required simulation call fails, returns an error, or produces no usable benchmark result, set `simulationResults` to `UNAVAILABLE: <reason>` and treat subsequent planning as degraded for Simulator MCP.
@@ -249,6 +233,8 @@ Rules for `webReferences`:
 - **DO NOT claim historical evidence without actual tool output.** If `pimclaw_query_perfllm` cannot run, fails, or returns no usable data, `perfEvidence` MUST explicitly begin with `UNAVAILABLE:` and explain why.
 - **DO NOT continue calling Perf MCP as if it were healthy after a failed availability probe.** Treat it as `UNAVAILABLE` for the rest of the run.
 - **DO NOT submit a plan as validated unless simulation actually ran.** You MUST run `pimclaw_sim_start`, `pimclaw_sim_benchmark`, and `pimclaw_sim_stop` for each candidate, unless Simulator MCP is unavailable.
+- **DO NOT transform the simulation model path.** `model_path` MUST be the exact LLM deployment name from the anomaly, for example `glm-5.1-fp8`.
+- **DO NOT pass optional parameters to pimclaw_sim_start.** It MUST include only `model_path` and `hardware_name`; use `hardware_name` = `H800` by default.
 - **DO NOT claim simulation results without actual tool output.** If simulation cannot run, fails, or returns no usable data, `simulationResults` MUST explicitly begin with `UNAVAILABLE:` and explain why.
 - **DO NOT continue calling Simulator MCP as if it were healthy after a failed availability probe.** Treat it as `UNAVAILABLE` for the rest of the run.
 - **DO NOT leave the simulator running.** You MUST call `pimclaw_sim_stop` after each benchmark and before evaluating the next candidate.

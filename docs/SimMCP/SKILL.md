@@ -122,9 +122,6 @@ register_hardware_batch(specs=[
 
 ### Simulation Service Management
 
-### HuggingFace Models
-Fetch models information from HuggingFace Hub, https://huggingface.co/models. model path or name must match a registered model on HuggingFace. Fetch the models information and store them in the local memory for later use when starting simulation server, sync with HuggingFace Hub to get the latest models information once there is no matching model found in the local memory when starting simulation server.
-
 #### `start_simulation_server`
 
 Start SGLang simulation service with hardware-aware configuration.
