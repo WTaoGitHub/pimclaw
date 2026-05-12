@@ -50,9 +50,9 @@ deployments running on that engine:
     "throughput": [...],
     "gpu_utilization": [...],
     "error_rate": [...],
-    "gpu_info": [{ "metric": { "model_name": "llama-70b", "modelName": "NVIDIA H800", ... }, "value": [ts, "8"], "pimclawGpuType": "NVIDIA H800", "hardware_name": "H800" }],
+    "gpu_info": [{ "metric": { "model_name": "llama-70b", "modelName": "NVIDIA H800", ... }, "value": [ts, "8"], "pimclawGpuType": "NVIDIA H800", "hardware_name": "NVIDIA H800_SXM" }],
     "pimclawHardwareByDeployment": {
-      "llama-70b": { "gpuType": "NVIDIA H800", "hardware_name": "H800", "sourceMetric": "vllm:gpu_info" }
+      "llama-70b": { "gpuType": "NVIDIA H800", "hardware_name": "NVIDIA H800_SXM", "sourceMetric": "vllm:gpu_info" }
     }
   },
   "sglang": {
@@ -261,7 +261,7 @@ If anomalies are detected, call pimclaw_submit_anomalies with an array of events
       "previousValue": 0,
       "severity": "high | medium | low",
       "deploymentName": "<deployment identifier>",
-      "hardwareName": "<optional normalized hardware name, e.g. H800>",
+      "hardwareName": "<optional normalized HiSim hardware name, e.g. NVIDIA H800_SXM>",
       "gpuType": "<optional raw GPU type, e.g. NVIDIA H800>",
       "reasoning": "<your analysis of what's happening and why>"
     }

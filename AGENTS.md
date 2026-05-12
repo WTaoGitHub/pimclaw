@@ -74,9 +74,9 @@ deployments running on that engine:
     "throughput": [...],
     "gpu_utilization": [...],
     "error_rate": [...],
-    "gpu_info": [{ "metric": { "model_name": "llama-70b", "modelName": "NVIDIA H800", ... }, "value": [ts, "8"], "pimclawGpuType": "NVIDIA H800", "hardware_name": "H800" }],
+    "gpu_info": [{ "metric": { "model_name": "llama-70b", "modelName": "NVIDIA H800", ... }, "value": [ts, "8"], "pimclawGpuType": "NVIDIA H800", "hardware_name": "NVIDIA H800_SXM" }],
     "pimclawHardwareByDeployment": {
-      "llama-70b": { "gpuType": "NVIDIA H800", "hardware_name": "H800", "sourceMetric": "vllm:gpu_info" }
+      "llama-70b": { "gpuType": "NVIDIA H800", "hardware_name": "NVIDIA H800_SXM", "sourceMetric": "vllm:gpu_info" }
     }
   },
   "sglang": {
@@ -282,7 +282,7 @@ If anomalies are detected, call pimclaw_submit_anomalies with an array of events
       "previousValue": 0,
       "severity": "high | medium | low",
       "deploymentName": "<deployment identifier>",
-      "hardwareName": "<optional normalized hardware name, e.g. H800>",
+      "hardwareName": "<optional normalized HiSim hardware name, e.g. NVIDIA H800_SXM>",
       "gpuType": "<optional raw GPU type, e.g. NVIDIA H800>",
       "reasoning": "<your analysis of what's happening and why>"
     }
@@ -423,26 +423,30 @@ via the Hisim MCP server. Available tools:
 - `pimclaw_sim_start` — start simulation server with exactly two parameters:
   `model_path` and `hardware_name`. Set `model_path` to the exact LLM deployment
   name from the anomaly. Set `hardware_name` to the anomaly event's
-  `hardwareName` when present; otherwise use `H800` as the default. Ignore all
-  optional start parameters.
+  `hardwareName` when present; otherwise use `NVIDIA H800_SXM` as the default.
+  Ignore all optional start parameters.
 - `pimclaw_sim_stop` — stop simulation server
 - `pimclaw_sim_status` — check if simulation server is running
 
 **Benchmarking:**
-- `pimclaw_sim_benchmark` — run benchmark serving (model, dataset_name: random/sharegpt/hisim-collection,
-  base_url default http://127.0.0.1:8723, num_prompts, random_input_len,
-  random_output_len, random_range_ratio, request_rate, max_concurrency,
-  warmup_requests, output_file, output_details)
+- `pimclaw_sim_benchmark` — run benchmark serving. Required parameters:
+  `backend`, `base_url`, `model`, `dataset_name`, `warmup_requests`. Put benchmark
+  knobs such as `num_prompts`, `dataset_path`, `random_input_len`,
+  `random_output_len`, `random_range_ratio`, `request_rate`, `max_concurrency`,
+  `output_file`, and `output_details` inside `extra_request_body`.
   Returns: mean_ttft_ms, mean_tpot_ms, output_throughput, request_throughput, mean_e2e_latency_ms
-- `pimclaw_sim_dataset_info` — preview dataset info before benchmarking
+- `pimclaw_sim_dataset_info` — preview dataset info before benchmarking. Required
+  parameters: `dataset_name`, `model`. Put preview knobs such as `num_prompts`,
+  `dataset_path`, `random_input_len`, and `random_output_len` inside
+  `extra_request_body`.
 
 **Simulation workflow:**
 1. Call `pimclaw_sim_list_hardware` to check if the target hardware is registered
 2. If not registered, call `pimclaw_sim_register_hardware` with the hardware specs
 3. Set `model_path` to the exact LLM deployment name from the anomaly, for example `glm-5.1-fp8`
-4. Set `hardware_name` to the anomaly event's `hardwareName`, or `H800` if it is absent
-5. Call `pimclaw_sim_start` with exactly `{ "model_path": "<deployment name>", "hardware_name": "<hardwareName or H800>" }`
-6. Call `pimclaw_sim_benchmark` with representative workload parameters
+4. Set `hardware_name` to the anomaly event's `hardwareName`, or `NVIDIA H800_SXM` if it is absent
+5. Call `pimclaw_sim_start` with exactly `{ "model_path": "<deployment name>", "hardware_name": "<hardwareName or NVIDIA H800_SXM>" }`
+6. Call `pimclaw_sim_benchmark` with representative workload parameters and put workload knobs inside `extra_request_body`
 7. Record the results (TTFT, TPOT, throughput)
 8. Call `pimclaw_sim_stop` to release resources
 9. Repeat steps 3-8 for each candidate config, then compare results
@@ -494,9 +498,9 @@ to determine the right configuration.
 4. **Simulate candidates.** For each candidate config:
   a. Use the earlier `pimclaw_sim_list_hardware` probe result to verify Simulator MCP availability, and call it again only if you need fresh hardware state
    b. Set `model_path` to the exact LLM deployment name from the anomaly, for example `glm-5.1-fp8`
-   c. Set `hardware_name` to the anomaly event's `hardwareName`, or `H800` if it is absent
+   c. Set `hardware_name` to the anomaly event's `hardwareName`, or `NVIDIA H800_SXM` if it is absent
    d. Call `pimclaw_sim_start` with exactly two parameters: `model_path` and `hardware_name`
-   e. Call `pimclaw_sim_benchmark` with workload matching the anomaly's QPS/load
+   e. Call `pimclaw_sim_benchmark` with `backend`, `base_url`, `model`, `dataset_name`, `warmup_requests`, and `extra_request_body` matching the anomaly's QPS/load
    f. Record mean_ttft_ms, mean_tpot_ms, output_throughput from the results
    g. Call `pimclaw_sim_stop` before testing the next candidate
    Compare predicted TTFT, TPOT, throughput across all candidates.
@@ -543,7 +547,8 @@ Call pimclaw_plan_task:
 - **Do NOT continue calling Perf MCP as if it were healthy after a failed availability probe.** Treat it as `UNAVAILABLE` for the rest of the run.
 - **Do NOT submit a plan before simulating each candidate.** Use pimclaw_sim_start → pimclaw_sim_benchmark → pimclaw_sim_stop for every candidate, and do not deploy unvalidated configs.
 - **Do NOT transform the simulation model path.** `model_path` MUST be the exact LLM deployment name from the anomaly, for example `glm-5.1-fp8`.
-- **Do NOT pass optional parameters to pimclaw_sim_start.** It MUST include only `model_path` and `hardware_name`; use anomaly `hardwareName` when available, otherwise use `H800`.
+- **Do NOT pass optional parameters to pimclaw_sim_start.** It MUST include only `model_path` and `hardware_name`; use anomaly `hardwareName` when available, otherwise use `NVIDIA H800_SXM`.
+- **Do NOT pass flattened benchmark knobs to pimclaw_sim_benchmark or pimclaw_sim_dataset_info.** Put dataset and workload knobs inside `extra_request_body`.
 - **Do NOT claim simulation results without actual tool output.** If simulation cannot run, fails, or returns no usable data, `simulationResults` MUST explicitly begin with `UNAVAILABLE:` and explain why.
 - **Do NOT continue calling Simulator MCP as if it were healthy after a failed availability probe.** Treat it as `UNAVAILABLE` for the rest of the run.
 - **Do NOT leave the simulator running between candidates.** Call pimclaw_sim_stop after each benchmark run before starting the next candidate.

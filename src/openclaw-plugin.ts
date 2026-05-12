@@ -389,6 +389,15 @@ function buildRuntimeAnomalyHints(
 
 function normalizeHardwareName(gpuType: string): string {
   const trimmed = gpuType.trim();
+  const hardwareMappings: Array<[RegExp, string]> = [
+    [/^NVIDIA\s+H800$/i, 'NVIDIA H800_SXM'],
+    [/^H800$/i, 'NVIDIA H800_SXM'],
+  ];
+  for (const [pattern, mapped] of hardwareMappings) {
+    if (pattern.test(trimmed)) {
+      return mapped;
+    }
+  }
   const withoutVendor = trimmed.replace(/^NVIDIA\s+/i, '').trim();
   return withoutVendor || trimmed;
 }
@@ -1655,7 +1664,7 @@ function buildPimClawTools() {
               previousValue: { type: 'number' },
               severity: { type: 'string', enum: ['high', 'medium', 'low'] },
               deploymentName: { type: 'string' },
-              hardwareName: { type: 'string', description: 'Optional normalized runtime hardware name from pimclaw_query_metrics, for example "H800".' },
+              hardwareName: { type: 'string', description: 'Optional normalized HiSim runtime hardware name from pimclaw_query_metrics, for example "NVIDIA H800_SXM".' },
               gpuType: { type: 'string', description: 'Optional raw GPU model label from Prometheus, for example "NVIDIA H800".' },
               reasoning: { type: 'string' },
             },
@@ -2362,6 +2371,65 @@ function buildPimClawTools() {
     };
   }
 
+  function packExtraRequestBody(
+    params: Record<string, unknown>,
+    keys: string[],
+  ): Record<string, unknown> {
+    const extra = params.extra_request_body && typeof params.extra_request_body === 'object' && !Array.isArray(params.extra_request_body)
+      ? { ...(params.extra_request_body as Record<string, unknown>) }
+      : {};
+    for (const key of keys) {
+      if (params[key] !== undefined && extra[key] === undefined) {
+        extra[key] = params[key];
+      }
+    }
+    return extra;
+  }
+
+  function adaptSimToolParams(name: string, params: Record<string, unknown>): Record<string, unknown> {
+    if (name === 'pimclaw_sim_benchmark') {
+      return {
+        ...params,
+        backend: params.backend ?? 'sglang',
+        base_url: params.base_url ?? 'http://127.0.0.1:8723',
+        dataset_name: params.dataset_name ?? 'random',
+        warmup_requests: params.warmup_requests ?? 0,
+        extra_request_body: packExtraRequestBody(params, [
+          'num_prompts',
+          'dataset_path',
+          'random_input_len',
+          'random_output_len',
+          'random_range_ratio',
+          'request_rate',
+          'max_concurrency',
+          'seed',
+          'disable_tqdm',
+          'disable_stream',
+          'disable_ignore_eos',
+          'output_file',
+          'output_details',
+        ]),
+      };
+    }
+
+    if (name === 'pimclaw_sim_dataset_info') {
+      return {
+        ...params,
+        dataset_name: params.dataset_name ?? 'random',
+        extra_request_body: packExtraRequestBody(params, [
+          'num_prompts',
+          'dataset_path',
+          'random_input_len',
+          'random_output_len',
+          'random_range_ratio',
+          'seed',
+        ]),
+      };
+    }
+
+    return params;
+  }
+
   function summarizeSimResult(result: unknown): Record<string, unknown> {
     if (Array.isArray(result)) {
       return {
@@ -2454,7 +2522,8 @@ function buildPimClawTools() {
           };
         }
         try {
-          const result = await simMcpClient.callTool(hisimToolName, params);
+          const adaptedParams = adaptSimToolParams(name, params);
+          const result = await simMcpClient.callTool(hisimToolName, adaptedParams);
           pluginLogger?.debug(`[Planner:Sim] ${name} completed`, {
             invocationId,
             sessionId,
@@ -2532,12 +2601,12 @@ function buildPimClawTools() {
   const simStartTool = simTool(
     'pimclaw_sim_start',
     'start_simulation_server',
-    'Start SGLang simulation server. Supply only model_path and hardware_name; use the anomaly hardwareName from pimclaw_query_metrics when present, otherwise use "H800".',
+    'Start SGLang simulation server. Supply only model_path and hardware_name; use the anomaly hardwareName from pimclaw_query_metrics when present, otherwise use "NVIDIA H800_SXM".',
     {
       type: 'object' as const,
       properties: {
         model_path: { type: 'string', description: 'Model path. Use the exact LLM deployment name from the anomaly, for example "glm-5.1-fp8".' },
-        hardware_name: { type: 'string', description: 'Registered hardware name. Use the normalized hardwareName from pimclaw_query_metrics when present, otherwise use "H800".' },
+        hardware_name: { type: 'string', description: 'Registered HiSim hardware name. Use the normalized hardwareName from pimclaw_query_metrics when present, otherwise use "NVIDIA H800_SXM".' },
       },
       required: ['model_path', 'hardware_name'],
     },
@@ -2560,31 +2629,22 @@ function buildPimClawTools() {
   const simBenchmarkTool = simTool(
     'pimclaw_sim_benchmark',
     'run_bench_serving',
-    'Run benchmark serving against the simulation server. Returns TTFT, TPOT, throughput, and other performance metrics. Simulation server must be running first.',
+    'Run benchmark serving against the simulation server. Schema mirrors HiSim run_bench_serving: required backend, base_url, model, dataset_name, warmup_requests, plus optional extra_request_body.',
     {
       type: 'object' as const,
       properties: {
-        model: { type: 'string', description: 'Model name (should match simulation server model)' },
-        backend: { type: 'string', description: 'Backend type (default: "sglang")' },
-        dataset_name: { type: 'string', description: 'Dataset type: random, sharegpt, hisim-collection' },
-        dataset_path: { type: 'string', description: 'Path to dataset file (for sharegpt/hisim-collection)' },
-        num_prompts: { type: 'number', description: 'Number of prompts (for random dataset)' },
-        random_input_len: { type: 'number', description: 'Input token length (for random dataset)' },
-        random_output_len: { type: 'number', description: 'Output token length (for random dataset)' },
-        random_range_ratio: { type: 'number', description: 'Range ratio for random dataset' },
-        request_rate: { type: 'number', description: 'Requests per second (inf = all at once)' },
-        max_concurrency: { type: 'number', description: 'Maximum concurrent requests' },
-        seed: { type: 'number', description: 'Random seed (default: 1)' },
-        disable_tqdm: { type: 'boolean', description: 'Disable progress bar' },
-        disable_stream: { type: 'boolean', description: 'Disable streaming mode' },
-        disable_ignore_eos: { type: 'boolean', description: 'Disable ignoring EOS token' },
-        extra_request_body: { type: 'object', description: 'Extra JSON body for benchmark requests' },
-        warmup_requests: { type: 'number', description: 'Number of warmup requests (default: 0)' },
-        output_file: { type: 'string', description: 'Output file path for benchmark results' },
-        output_details: { type: 'boolean', description: 'Include detailed benchmark results' },
-        base_url: { type: 'string', description: 'Simulation server base URL (default: "http://127.0.0.1:8723")' },
+        backend: { type: 'string', description: 'Backend type, usually "sglang".' },
+        base_url: { type: 'string', description: 'Simulation server base URL, usually "http://127.0.0.1:8723".' },
+        model: { type: 'string', description: 'Model name or path. Should match the simulation server model_path.' },
+        dataset_name: { type: 'string', description: 'Dataset type: random, sharegpt, hisim-collection.' },
+        warmup_requests: { type: 'number', description: 'Number of warmup requests. Use 0 to skip warmup.' },
+        extra_request_body: {
+          type: 'object',
+          description:
+            'Additional benchmark parameters, e.g. num_prompts, dataset_path, random_input_len, random_output_len, random_range_ratio, request_rate, max_concurrency, output_file, output_details.',
+        },
       },
-      required: ['model'],
+      required: ['backend', 'base_url', 'model', 'dataset_name', 'warmup_requests'],
     },
   );
 
@@ -2595,10 +2655,13 @@ function buildPimClawTools() {
     {
       type: 'object' as const,
       properties: {
-        dataset_name: { type: 'string', description: 'Dataset type: random, sharegpt, hisim-collection' },
-        dataset_path: { type: 'string', description: 'Path to dataset file' },
-        model: { type: 'string', description: 'Model name for tokenization' },
-        num_prompts: { type: 'number', description: 'Number of prompts to preview' },
+        dataset_name: { type: 'string', description: 'Dataset type: random, sharegpt, hisim-collection.' },
+        model: { type: 'string', description: 'Model name or path for tokenizer.' },
+        extra_request_body: {
+          type: 'object',
+          description:
+            'Additional dataset preview parameters, e.g. num_prompts, dataset_path, random_input_len, random_output_len, random_range_ratio, seed.',
+        },
       },
       required: ['dataset_name', 'model'],
     },
