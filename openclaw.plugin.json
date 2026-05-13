@@ -59,6 +59,15 @@
         },
         "required": ["baseUrl"]
       },
+      "fakePrometheusRemediation": {
+        "type": "object",
+        "description": "Test-only worker executor that posts remediation actions to a fake Prometheus server.",
+        "properties": {
+          "baseUrl": { "type": "string", "description": "Base URL of the fake Prometheus server, for example http://127.0.0.1:9090" },
+          "timeoutMs": { "type": "number", "default": 10000 }
+        },
+        "required": ["baseUrl"]
+      },
       "engineMcp": {
         "type": "object",
         "properties": {

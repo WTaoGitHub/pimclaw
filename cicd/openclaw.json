@@ -320,7 +320,11 @@
         "enabled": true,
         "config": {
           "prometheus": {
-            "baseUrl": "http://192.168.4.6:31904"
+            "baseUrl": "http://fake-prometheus.baota-playground.svc.cluster.local:9090"
+          },
+          "fakePrometheusRemediation": {
+            "baseUrl": "http://fake-prometheus.baota-playground.svc.cluster.local:9090",
+            "timeoutMs": 10000
           },
           "perfMcp": {
             "env": {
@@ -332,6 +336,13 @@
           },
           "simMcp": {
             "sseUrl": "http://192.168.4.26:8721/sse"
+          },
+          "engineMcp": {
+            "sseUrl": "http://<engine-mcp-host>:<port>/sse",
+            "username": "<platform-username>",
+            "password": "<platform-password>",
+            "tenantId": "<optional-tenant-id>",
+            "tokenRefreshMarginMs": 300000
           }
         }
       }

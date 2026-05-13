@@ -11,7 +11,7 @@ import { BaseAgent } from './base-agent.js';
 import { ComponentRegistry } from './component-registry.js';
 import { buildPlannerMemoryEpisodeFromTask, PlannerMemoryStore } from './planner-memory-store.js';
 import { TaskStatusRecorder } from './task-status-recorder.js';
-import { TaskExecutor } from './task-executor.js';
+import type { TaskRunner } from './task-executor.js';
 import { Task, AgentRuntimeStatus, TaskFeedback } from '../types/index.js';
 import type { PluginLogger } from 'openclaw/plugin-sdk/plugin-entry';
 
@@ -22,7 +22,7 @@ import type { PluginLogger } from 'openclaw/plugin-sdk/plugin-entry';
 export class WorkerAgent extends BaseAgent {
   private task: Task;
   private taskRecorder: TaskStatusRecorder;
-  private taskExecutor: TaskExecutor | null;
+  private taskExecutor: TaskRunner | null;
   private plannerMemoryStore: PlannerMemoryStore | null;
   private executionTimeout: number = 30 * 60 * 1000; // 30 minutes
   private readonly logger: PluginLogger | null;
@@ -31,7 +31,7 @@ export class WorkerAgent extends BaseAgent {
     registry: ComponentRegistry,
     taskRecorder: TaskStatusRecorder,
     task: Task,
-    taskExecutor?: TaskExecutor,
+    taskExecutor?: TaskRunner,
     plannerMemoryStore?: PlannerMemoryStore,
     logger?: PluginLogger,
   ) {

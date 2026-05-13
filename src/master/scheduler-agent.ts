@@ -8,7 +8,7 @@ import { ComponentRegistry } from './component-registry.js';
 import { PlannerMemoryStore } from './planner-memory-store.js';
 import { TaskStatusRecorder } from './task-status-recorder.js';
 import { WorkerAgent } from './worker-agent.js';
-import { TaskExecutor } from './task-executor.js';
+import type { TaskRunner } from './task-executor.js';
 import { Task } from '../types/index.js';
 import type { PluginLogger } from 'openclaw/plugin-sdk/plugin-entry';
 
@@ -26,7 +26,7 @@ export class SchedulerAgent extends BaseAgent {
   private workers: Map<string, WorkerAgent> = new Map();
   private pollingIntervalMs: number = 5000; // poll every 5 seconds
   private isRunning: boolean = false;
-  private taskExecutor: TaskExecutor | null = null;
+  private taskExecutor: TaskRunner | null = null;
   private readonly plannerMemoryStore: PlannerMemoryStore | null;
   private readonly logger: PluginLogger | null;
 
@@ -34,7 +34,7 @@ export class SchedulerAgent extends BaseAgent {
     registry: ComponentRegistry,
     taskRecorder: TaskStatusRecorder,
     maxWorkers?: number,
-    taskExecutor?: TaskExecutor,
+    taskExecutor?: TaskRunner,
     plannerMemoryStore?: PlannerMemoryStore,
     logger?: PluginLogger,
   ) {

@@ -55,7 +55,8 @@ import { PerfMcpClient } from './master/perf-mcp-client.js';
 import type { PerfMcpConfig } from './master/perf-mcp-client.js';
 import { SimMcpClient } from './master/sim-mcp-client.js';
 import type { SimMcpConfig } from './master/sim-mcp-client.js';
-import { TaskExecutor } from './master/task-executor.js';
+import { TaskExecutor, type TaskRunner } from './master/task-executor.js';
+import { FakePrometheusTaskExecutor } from './master/fake-prometheus-task-executor.js';
 import { buildPlannerMemoryEpisodeFromTask, PlannerMemoryStore } from './master/planner-memory-store.js';
 import {
   DEFAULT_HEAD_FEEDBACK_SETTLING_DELAY_MS,
@@ -224,7 +225,7 @@ let perfMcpClient: PerfMcpClient | null = null;
 let simMcpClient: SimMcpClient | null = null;
 let simMcpConfig: SimMcpConfig | null = null;
 let simMcpUnavailableReason = 'sim MCP not configured';
-let taskExecutor: TaskExecutor | null = null;
+let taskExecutor: TaskRunner | null = null;
 let plannerMemoryStore: PlannerMemoryStore | null = null;
 let prometheusQueryOverrides: Record<string, string> = {};
 let prometheusDefaultLabels: Record<string, string> = {};
@@ -1229,9 +1230,22 @@ function createPimClawService(): OpenClawPluginService {
       await headSummaryStore.load();
       ctx.logger.info(`[PimClaw] HeadSummaryStore loaded (${headSummaryStore.size} existing records)`);
 
-      // 6. EngineMcpClient + TaskExecutor — for Worker execution via qianjin-xuntui MCP
+      // 6. Worker task executor — fake remediation for tests, otherwise qianjin-xuntui Engine MCP
+      const fakeRemediationCfg = (config as any)?.fakePrometheusRemediation;
+      if (fakeRemediationCfg?.baseUrl) {
+        taskExecutor = new FakePrometheusTaskExecutor({
+          baseUrl: fakeRemediationCfg.baseUrl,
+          timeoutMs: fakeRemediationCfg.timeoutMs,
+        });
+        if (scheduler) {
+          (scheduler as any).taskExecutor = taskExecutor;
+        }
+        ctx.logger.info(`[PimClaw] Fake Prometheus remediation enabled → ${fakeRemediationCfg.baseUrl}`);
+      }
+
+      // 6b. EngineMcpClient + TaskExecutor — for Worker execution via qianjin-xuntui MCP
       const engineCfg = (config as any)?.engineMcp;
-      if (engineCfg?.sseUrl && engineCfg?.username && engineCfg?.password) {
+      if (!taskExecutor && engineCfg?.sseUrl && engineCfg?.username && engineCfg?.password) {
         try {
           engineMcpClient = new EngineMcpClient({
             sseUrl: engineCfg.sseUrl,
@@ -1253,7 +1267,7 @@ function createPimClawService(): OpenClawPluginService {
           engineMcpClient = null;
           taskExecutor = null;
         }
-      } else {
+      } else if (!taskExecutor) {
         ctx.logger.warn('[PimClaw] No engineMcp config — Worker task execution will be unavailable');
       }
 
