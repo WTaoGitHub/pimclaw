@@ -305,6 +305,9 @@
       "memory-core": {
         "enabled": false
       },
+      "feishu": {
+        "enabled": true
+      },
       "minimax": {
         "enabled": true
       },

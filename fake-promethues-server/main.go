@@ -219,6 +219,7 @@ type metricsStore struct {
 	virtualNow       float64
 	lastGenerated    float64
 	remediated       bool
+	forceAnomaly     bool
 	lastAction       string
 	lastActionAt     float64
 	lastRecoveredAt  float64
@@ -266,6 +267,9 @@ func (s *metricsStore) cycleIndex(ts float64) int {
 
 func (s *metricsStore) effectiveCycleIndex(ts float64) int {
 	idx := s.cycleIndex(ts)
+	if s.forceAnomaly {
+		return 2
+	}
 	if s.remediated && idx == 2 {
 		return 1
 	}
@@ -393,7 +397,7 @@ func (s *metricsStore) getInstant(metricKey string) *point {
 	if len(pts) == 0 {
 		return nil
 	}
-	if s.forceQueryShock && !s.remediated {
+	if s.forceQueryShock && !s.remediated && !s.forceAnomaly {
 		shockHigh := s.cycleNumber(s.virtualNow)%2 == 0
 		value := s.generateValue(metricKey, s.virtualNow)
 		profileBase := metricProfiles[metricKey].Bases[s.cycleIndex(s.virtualNow)]
@@ -408,7 +412,7 @@ func (s *metricsStore) getRange(metricKey string, start, end float64, step int) 
 	s.scrape()
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.forceQueryShock {
+	if s.forceQueryShock && !s.forceAnomaly {
 		if s.remediated {
 			pts := s.data[metricKey]
 			if len(pts) == 0 {
@@ -463,10 +467,14 @@ func (s *metricsStore) getRange(metricKey string, start, end float64, step int) 
 func (s *metricsStore) currentPhase() string {
 	s.mu.Lock()
 	remediated := s.remediated
+	forceAnomaly := s.forceAnomaly
 	virtualNow := s.virtualNow
 	s.mu.Unlock()
 	if remediated {
 		return "REMEDIATED-NORMAL"
+	}
+	if forceAnomaly {
+		return "ANOMALY"
 	}
 	idx := s.cycleIndex(virtualNow)
 	if idx == 2 {
@@ -479,9 +487,13 @@ func (s *metricsStore) nextAnomalyInSeconds() float64 {
 	now := s.currentVirtualNow()
 	s.mu.Lock()
 	remediated := s.remediated
+	forceAnomaly := s.forceAnomaly
 	s.mu.Unlock()
 	if remediated {
 		return -1
+	}
+	if forceAnomaly {
+		return 0
 	}
 	elapsed := now - s.startTime
 	pos := math.Mod(elapsed, s.fullCycleSeconds)
@@ -502,6 +514,7 @@ func (s *metricsStore) applyAction(action string) map[string]any {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.remediated = true
+	s.forceAnomaly = false
 	s.lastAction = action
 	s.lastActionAt = s.virtualNow
 	s.resetHistoryLocked()
@@ -512,7 +525,7 @@ func (s *metricsStore) recoverAnomaly() map[string]any {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.remediated = false
-	s.startTime = s.virtualNow - s.fullCycleSeconds + scrapeInterval.Seconds()
+	s.forceAnomaly = true
 	s.lastRecoveredAt = s.virtualNow
 	s.resetHistoryLocked()
 	return s.stateLocked()
@@ -521,32 +534,41 @@ func (s *metricsStore) recoverAnomaly() map[string]any {
 func (s *metricsStore) stateLocked() map[string]any {
 	nextAnomaly := any(nil)
 	if !s.remediated {
-		elapsed := s.virtualNow - s.startTime
-		pos := math.Mod(elapsed, s.fullCycleSeconds)
-		if pos < 0 {
-			pos += s.fullCycleSeconds
-		}
-		anomalyStart := s.cycleSeconds * 2
-		if s.cycleIndex(s.virtualNow) == 2 {
+		if s.forceAnomaly {
 			nextAnomaly = float64(0)
-		} else if pos < anomalyStart {
-			nextAnomaly = math.Round((anomalyStart-pos)*10) / 10
 		} else {
-			nextAnomaly = math.Round((s.fullCycleSeconds-pos+anomalyStart)*10) / 10
+			elapsed := s.virtualNow - s.startTime
+			pos := math.Mod(elapsed, s.fullCycleSeconds)
+			if pos < 0 {
+				pos += s.fullCycleSeconds
+			}
+			anomalyStart := s.cycleSeconds * 2
+			if s.cycleIndex(s.virtualNow) == 2 {
+				nextAnomaly = float64(0)
+			} else if pos < anomalyStart {
+				nextAnomaly = math.Round((anomalyStart-pos)*10) / 10
+			} else {
+				nextAnomaly = math.Round((s.fullCycleSeconds-pos+anomalyStart)*10) / 10
+			}
 		}
 	}
 	phase := "REMEDIATED-NORMAL"
 	if !s.remediated {
-		idx := s.cycleIndex(s.virtualNow)
-		if idx == 2 {
+		if s.forceAnomaly {
 			phase = "ANOMALY"
 		} else {
-			phase = fmt.Sprintf("NORMAL-%d", idx+1)
+			idx := s.cycleIndex(s.virtualNow)
+			if idx == 2 {
+				phase = "ANOMALY"
+			} else {
+				phase = fmt.Sprintf("NORMAL-%d", idx+1)
+			}
 		}
 	}
 	return map[string]any{
 		"phase":                   phase,
 		"remediated":              s.remediated,
+		"force_anomaly":           s.forceAnomaly,
 		"last_action":             s.lastAction,
 		"last_action_at":          s.lastActionAt,
 		"last_recovered_at":       s.lastRecoveredAt,
@@ -710,6 +732,7 @@ func (s *fakePromServer) handleStatus(w http.ResponseWriter, _ *http.Request) {
 	}
 	s.store.mu.Lock()
 	info["remediated"] = s.store.remediated
+	info["force_anomaly"] = s.store.forceAnomaly
 	info["last_action"] = s.store.lastAction
 	info["last_action_at"] = s.store.lastActionAt
 	info["last_recovered_at"] = s.store.lastRecoveredAt

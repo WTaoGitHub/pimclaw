@@ -59,9 +59,9 @@ To recover the server back to the anomaly model:
 curl -s -X POST http://127.0.0.1:9090/_fake/recover-anomaly
 ```
 
-Recovery immediately positions the synthetic clock in the `ANOMALY` phase so the
-next `pimclaw_query_metrics(rangeMinutes=5)` call sees abnormal LLM performance
-metrics again.
+Recovery forces `ANOMALY` mode until the next accepted remediation action, so
+every `pimclaw_query_metrics(rangeMinutes=5)` call sees abnormal LLM performance
+metrics even as the fake server's synthetic range-query clock advances.
 
 ## Local Run
 

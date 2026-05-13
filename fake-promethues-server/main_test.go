@@ -92,14 +92,23 @@ func TestActionSuppressesAnomalyUntilRecovery(t *testing.T) {
 	if avg := averageTTFT(t, ts.URL); avg < 0.35 {
 		t.Fatalf("expected recovered anomaly TTFT average >= 0.35s, got %.3fs", avg)
 	}
+	if avg := averageTTFT(t, ts.URL); avg < 0.35 {
+		t.Fatalf("expected recovered anomaly to persist across range-query cycles, got %.3fs", avg)
+	}
 
 	postJSON(t, ts.URL+"/_fake/action", `{"action":"restart","deploymentName":"minimax-m25-tp8ep"}`)
 	if avg := averageTTFT(t, ts.URL); avg > 0.20 {
 		t.Fatalf("expected remediated TTFT average <= 0.20s, got %.3fs", avg)
 	}
+	if avg := averageTTFT(t, ts.URL); avg > 0.20 {
+		t.Fatalf("expected remediation to keep suppressing anomaly across range-query cycles, got %.3fs", avg)
+	}
 
 	postJSON(t, ts.URL+"/_fake/recover-anomaly", `{}`)
 	if avg := averageTTFT(t, ts.URL); avg < 0.35 {
 		t.Fatalf("expected recovered anomaly TTFT average >= 0.35s, got %.3fs", avg)
+	}
+	if avg := averageTTFT(t, ts.URL); avg < 0.35 {
+		t.Fatalf("expected second recovery anomaly to persist across range-query cycles, got %.3fs", avg)
 	}
 }
