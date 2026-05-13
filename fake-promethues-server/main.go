@@ -218,6 +218,10 @@ type metricsStore struct {
 	forceQueryShock  bool
 	virtualNow       float64
 	lastGenerated    float64
+	remediated       bool
+	lastAction       string
+	lastActionAt     float64
+	lastRecoveredAt  float64
 	data             map[string][]point
 	mu               sync.Mutex
 }
@@ -256,6 +260,14 @@ func (s *metricsStore) cycleIndex(ts float64) int {
 	}
 	if idx < 0 {
 		return 0
+	}
+	return idx
+}
+
+func (s *metricsStore) effectiveCycleIndex(ts float64) int {
+	idx := s.cycleIndex(ts)
+	if s.remediated && idx == 2 {
+		return 1
 	}
 	return idx
 }
@@ -316,7 +328,7 @@ func (s *metricsStore) shockFactor(metricKey string, ts float64, shockHigh bool)
 
 func (s *metricsStore) generateValue(metricKey string, ts float64) float64 {
 	p := metricProfiles[metricKey]
-	idx := s.cycleIndex(ts)
+	idx := s.effectiveCycleIndex(ts)
 	base := p.Bases[idx] * s.cycleFactor(metricKey, ts, idx)
 	bucket := int64(ts) / int64(scrapeInterval.Seconds())
 	r := seededRand(metricKey, bucket)
@@ -346,6 +358,14 @@ func (s *metricsStore) generateUpTo(target float64) {
 	}
 }
 
+func (s *metricsStore) resetHistoryLocked() {
+	for k := range metricProfiles {
+		s.data[k] = make([]point, 0, maxHistory)
+	}
+	s.lastGenerated = s.virtualNow - 600
+	s.generateUpTo(s.virtualNow)
+}
+
 func (s *metricsStore) scrape() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -373,7 +393,7 @@ func (s *metricsStore) getInstant(metricKey string) *point {
 	if len(pts) == 0 {
 		return nil
 	}
-	if s.forceQueryShock {
+	if s.forceQueryShock && !s.remediated {
 		shockHigh := s.cycleNumber(s.virtualNow)%2 == 0
 		value := s.generateValue(metricKey, s.virtualNow)
 		profileBase := metricProfiles[metricKey].Bases[s.cycleIndex(s.virtualNow)]
@@ -389,6 +409,27 @@ func (s *metricsStore) getRange(metricKey string, start, end float64, step int) 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.forceQueryShock {
+		if s.remediated {
+			pts := s.data[metricKey]
+			if len(pts) == 0 {
+				return [][2]any{}
+			}
+			pointMap := make(map[int64]float64, len(pts))
+			for _, p := range pts {
+				k := int64(alignToInterval(p.TS))
+				pointMap[k] = p.Val
+			}
+			res := make([][2]any, 0)
+			for t := math.Floor(start); t <= end; t += float64(step) {
+				k := int64(alignToInterval(t))
+				v, ok := pointMap[k]
+				if !ok {
+					v = s.generateValue(metricKey, t)
+				}
+				res = append(res, [2]any{t, fmt.Sprintf("%.6f", v)})
+			}
+			return res
+		}
 		shockHigh := s.cycleNumber(s.virtualNow)%2 == 0
 		res := make([][2]any, 0)
 		for t := math.Floor(start); t <= end; t += float64(step) {
@@ -420,7 +461,14 @@ func (s *metricsStore) getRange(metricKey string, start, end float64, step int) 
 }
 
 func (s *metricsStore) currentPhase() string {
-	idx := s.cycleIndex(s.currentVirtualNow())
+	s.mu.Lock()
+	remediated := s.remediated
+	virtualNow := s.virtualNow
+	s.mu.Unlock()
+	if remediated {
+		return "REMEDIATED-NORMAL"
+	}
+	idx := s.cycleIndex(virtualNow)
 	if idx == 2 {
 		return "ANOMALY"
 	}
@@ -429,16 +477,82 @@ func (s *metricsStore) currentPhase() string {
 
 func (s *metricsStore) nextAnomalyInSeconds() float64 {
 	now := s.currentVirtualNow()
+	s.mu.Lock()
+	remediated := s.remediated
+	s.mu.Unlock()
+	if remediated {
+		return -1
+	}
 	elapsed := now - s.startTime
 	pos := math.Mod(elapsed, s.fullCycleSeconds)
 	if pos < 0 {
 		pos += s.fullCycleSeconds
 	}
 	anomalyStart := s.cycleSeconds * 2
+	if s.cycleIndex(now) == 2 {
+		return 0
+	}
 	if pos < anomalyStart {
 		return anomalyStart - pos
 	}
 	return s.fullCycleSeconds - pos + anomalyStart
+}
+
+func (s *metricsStore) applyAction(action string) map[string]any {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.remediated = true
+	s.lastAction = action
+	s.lastActionAt = s.virtualNow
+	s.resetHistoryLocked()
+	return s.stateLocked()
+}
+
+func (s *metricsStore) recoverAnomaly() map[string]any {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.remediated = false
+	s.startTime = s.virtualNow - s.fullCycleSeconds + scrapeInterval.Seconds()
+	s.lastRecoveredAt = s.virtualNow
+	s.resetHistoryLocked()
+	return s.stateLocked()
+}
+
+func (s *metricsStore) stateLocked() map[string]any {
+	nextAnomaly := any(nil)
+	if !s.remediated {
+		elapsed := s.virtualNow - s.startTime
+		pos := math.Mod(elapsed, s.fullCycleSeconds)
+		if pos < 0 {
+			pos += s.fullCycleSeconds
+		}
+		anomalyStart := s.cycleSeconds * 2
+		if s.cycleIndex(s.virtualNow) == 2 {
+			nextAnomaly = float64(0)
+		} else if pos < anomalyStart {
+			nextAnomaly = math.Round((anomalyStart-pos)*10) / 10
+		} else {
+			nextAnomaly = math.Round((s.fullCycleSeconds-pos+anomalyStart)*10) / 10
+		}
+	}
+	phase := "REMEDIATED-NORMAL"
+	if !s.remediated {
+		idx := s.cycleIndex(s.virtualNow)
+		if idx == 2 {
+			phase = "ANOMALY"
+		} else {
+			phase = fmt.Sprintf("NORMAL-%d", idx+1)
+		}
+	}
+	return map[string]any{
+		"phase":                   phase,
+		"remediated":              s.remediated,
+		"last_action":             s.lastAction,
+		"last_action_at":          s.lastActionAt,
+		"last_recovered_at":       s.lastRecoveredAt,
+		"next_anomaly_in_seconds": nextAnomaly,
+		"virtual_now":             s.virtualNow,
+	}
 }
 
 func identifyMetric(query string) string {
@@ -533,6 +647,12 @@ type fakePromServer struct {
 	hasSeenFirstCycle    bool
 }
 
+type fakeActionRequest struct {
+	Action         string `json:"action"`
+	TaskType       string `json:"taskType"`
+	DeploymentName string `json:"deploymentName"`
+}
+
 func (s *fakePromServer) ensureAdvancedOncePerCycle(endSec float64) {
 	cycleEnd := int64(math.Floor(endSec))
 	s.rangeMu.Lock()
@@ -574,17 +694,25 @@ func (s *fakePromServer) sendJSONLogged(w http.ResponseWriter, code int, data an
 
 func (s *fakePromServer) handleStatus(w http.ResponseWriter, _ *http.Request) {
 	virtualNow := s.store.currentVirtualNow()
+	nextAnomaly := any(math.Round(s.store.nextAnomalyInSeconds()*10) / 10)
+	if s.store.nextAnomalyInSeconds() < 0 {
+		nextAnomaly = nil
+	}
 	info := map[string]any{
 		"phase":                   s.store.currentPhase(),
 		"cycle_index":             s.store.cycleIndex(virtualNow),
-		"next_anomaly_in_seconds": math.Round(s.store.nextAnomalyInSeconds()*10) / 10,
+		"next_anomaly_in_seconds": nextAnomaly,
 		"cycle_minutes":           s.store.cycleMinutes,
-		"full_cycle_minutes":      s.store.cycleMinutes * 4,
+		"full_cycle_minutes":      s.store.cycleMinutes * 3,
 		"uptime_seconds":          math.Round((virtualNow-s.store.startTime)*10) / 10,
 		"virtual_now":             virtualNow,
 		"metrics":                 []string{"ttft", "tpot", "qps", "throughput", "gpu_utilization", "error_rate"},
 	}
 	s.store.mu.Lock()
+	info["remediated"] = s.store.remediated
+	info["last_action"] = s.store.lastAction
+	info["last_action_at"] = s.store.lastActionAt
+	info["last_recovered_at"] = s.store.lastRecoveredAt
 	points := make(map[string]int)
 	for k, v := range s.store.data {
 		points[k] = len(v)
@@ -592,6 +720,73 @@ func (s *fakePromServer) handleStatus(w http.ResponseWriter, _ *http.Request) {
 	s.store.mu.Unlock()
 	info["data_points_per_metric"] = points
 	s.sendJSON(w, http.StatusOK, info)
+}
+
+func normalizeAction(action string) (string, bool) {
+	action = strings.ToLower(strings.TrimSpace(action))
+	action = strings.ReplaceAll(action, "_", "-")
+	switch action {
+	case "restart":
+		return "restart", true
+	case "reconfig", "reconfigure":
+		return "reconfigure", true
+	case "scale-in", "scale-down":
+		return "scale-in", true
+	case "scale-out", "scale-up":
+		return "scale-out", true
+	default:
+		return action, false
+	}
+}
+
+func (s *fakePromServer) handleFakeAction(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		s.sendJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "use POST"})
+		return
+	}
+
+	req := fakeActionRequest{
+		Action:         r.URL.Query().Get("action"),
+		TaskType:       r.URL.Query().Get("taskType"),
+		DeploymentName: r.URL.Query().Get("deploymentName"),
+	}
+	if r.Body != nil {
+		defer r.Body.Close()
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil && err.Error() != "EOF" {
+			s.sendJSON(w, http.StatusBadRequest, map[string]any{"error": fmt.Sprintf("invalid JSON body: %v", err)})
+			return
+		}
+	}
+
+	rawAction := req.Action
+	if strings.TrimSpace(rawAction) == "" {
+		rawAction = req.TaskType
+	}
+	action, ok := normalizeAction(rawAction)
+	if !ok {
+		s.sendJSON(w, http.StatusBadRequest, map[string]any{
+			"error":            "unsupported action",
+			"supportedActions": []string{"restart", "reconfig", "reconfigure", "scale-in", "scale-out", "scale-up", "scale-down"},
+		})
+		return
+	}
+
+	state := s.store.applyAction(action)
+	state["ok"] = true
+	state["accepted_action"] = action
+	state["deploymentName"] = req.DeploymentName
+	s.sendJSON(w, http.StatusOK, state)
+}
+
+func (s *fakePromServer) handleRecoverAnomaly(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		s.sendJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "use POST"})
+		return
+	}
+	state := s.store.recoverAnomaly()
+	state["ok"] = true
+	state["message"] = "fake metrics recovered to anomaly mode"
+	s.sendJSON(w, http.StatusOK, state)
 }
 
 func (s *fakePromServer) handleInstantQuery(w http.ResponseWriter, r *http.Request) {
@@ -739,6 +934,10 @@ func (s *fakePromServer) handler() http.Handler {
 		s.sendJSON(w, http.StatusOK, promResponse{Status: "success", Data: map[string]any{"yaml": "fake"}})
 	})
 	mux.HandleFunc("/_fake/status", s.handleStatus)
+	mux.HandleFunc("/_fake/action", s.handleFakeAction)
+	mux.HandleFunc("/_fake/actions", s.handleFakeAction)
+	mux.HandleFunc("/_fake/recover", s.handleRecoverAnomaly)
+	mux.HandleFunc("/_fake/recover-anomaly", s.handleRecoverAnomaly)
 	mux.HandleFunc("/", s.rootFallback)
 
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

@@ -9,6 +9,8 @@ It implements key Prometheus endpoints used by `pimclaw_query_metrics`:
 - `GET /-/ready`
 - `GET /api/v1/status/config`
 - `GET /_fake/status` (custom debug endpoint)
+- `POST /_fake/action` or `POST /_fake/actions` (custom remediation endpoint)
+- `POST /_fake/recover` or `POST /_fake/recover-anomaly` (custom anomaly recovery endpoint)
 
 The server stores in-memory time-series and continuously generates data every 15s.
 It rotates through a 3-window cycle: `NORMAL-1 -> NORMAL-2 -> ANOMALY`.
@@ -30,6 +32,37 @@ Semantics of the first four calls:
 Within one metrics collection cycle, multiple metric queries sharing the same `end`
 stay in the same window, so all six metrics are consistent for that cycle.
 
+## Fake Remediation Control
+
+The fake server can simulate a deployment action fixing the issue. Call the action
+endpoint with any supported action:
+
+```bash
+curl -s -X POST http://127.0.0.1:9090/_fake/action \
+  -H 'Content-Type: application/json' \
+  -d '{"action":"restart","deploymentName":"minimax-m25-tp8ep"}'
+```
+
+Supported action names:
+- `restart`
+- `reconfig` / `reconfigure`
+- `scale-in` / `scale-down`
+- `scale-out` / `scale-up`
+
+After an action is accepted, the server enters `REMEDIATED-NORMAL` mode. In that
+mode, it keeps returning normal performance metrics and suppresses anomaly
+windows, even when the synthetic cycle reaches its anomaly phase.
+
+To recover the server back to the anomaly model:
+
+```bash
+curl -s -X POST http://127.0.0.1:9090/_fake/recover-anomaly
+```
+
+Recovery immediately positions the synthetic clock in the `ANOMALY` phase so the
+next `pimclaw_query_metrics(rangeMinutes=5)` call sees abnormal LLM performance
+metrics again.
+
 ## Local Run
 
 ```bash
@@ -45,7 +78,7 @@ Environment variable supported for cloud platforms:
 
 Flags:
 - `--port`: listen port
-- `--cycle-minutes`: minutes per cycle window (full cycle is 4x)
+- `--cycle-minutes`: minutes per cycle window (full cycle is 3x)
 
 ## Build and Validate
 
