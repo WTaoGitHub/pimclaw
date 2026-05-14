@@ -26,8 +26,9 @@ In PimClaw Head context, interpret them as: query configured fake/runtime Promet
 5. Use `--engine vllm` or `--engine sglang`; default is `vllm`.
 6. Use `--deployment` when the user wants one deployment. Omit it for aggregated metrics or fake Prometheus defaults.
 7. The script also fetches `gpu_info` when supported by the configured Prometheus source and prints it as `gpu_info` JSON. Use this to report deployment name, model name, and `hardware_name`.
-8. The default query range is 10 minutes with 15-second samples, so each metric line has 40 points.
-9. Return the generated PNG with Markdown image syntax if available. If PNG conversion is not available, return the SVG path.
+8. The query range is at least 10 minutes with 15-second samples, so each metric line has at least 40 points. Do not request shorter ranges for scout/latest-situation reports.
+9. Always pass `suppressAutoSubmit: true` to `pimclaw_query_metrics` in scout/chart-only mode so runtime guardrails do not auto-create anomaly tasks.
+10. Return the generated PNG with Markdown image syntax if available. If PNG conversion is not available, return the SVG path.
 
 Example:
 
@@ -66,6 +67,7 @@ Then show:
 - When fake Prometheus is configured, treat it as authoritative and do not query the real Prometheus URL.
 - Output: `fake-promethues-server/runtime-metrics-chart.svg`
 - Default range: 10 minutes
+- Minimum range: 10 minutes
 - Sample step: 15 seconds
 - Points per metric: 40
 - Metrics: `ttft`, `tpot`, `qps`, `throughput`, `gpu_utilization`, `error_rate`

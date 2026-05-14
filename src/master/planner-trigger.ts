@@ -32,6 +32,7 @@ export interface OpenClawAgentApi {
 export interface PlannerDeliveryConfig {
   enabled: boolean;
   channel: string;
+  account?: string;
   target?: string;
 }
 

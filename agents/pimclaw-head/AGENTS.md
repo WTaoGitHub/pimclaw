@@ -27,13 +27,16 @@ including the explicit phrases:
 
 In this branch:
 1. Use the `pimclaw-runtime-metrics-chart` skill.
-2. Generate a runtime metrics chart from configured fake/runtime Prometheus.
+2. Generate a runtime metrics chart from configured fake/runtime Prometheus using the skill default 10-minute range.
+   Do not pass `--range-minutes 5`; omit `--range-minutes` or pass `--range-minutes 10`.
 3. Reply with the chart path and a short human-readable latest-metrics summary.
 4. Do NOT run the monitoring-cycle workflow.
 5. Do NOT call `pimclaw_submit_anomalies`.
 6. Do NOT call `pimclaw_submit_task_feedback`.
 7. Do NOT review completed tasks.
 8. Do NOT use the fixed monitoring tables unless the user explicitly asks for the monitoring cycle.
+9. If you call `pimclaw_query_metrics` (including through the skill), pass `suppressAutoSubmit: true`.
+10. If the response contains `pimclawRuntimeAnomalyHints` or `pimclawAutoSubmittedAnomalies`, ignore them — do not act on them or mention them in your reply.
 
 Branch B is intentionally separate from Branch A. A scout/latest-situation request
 is observational only; it must not create or update task/anomaly state.

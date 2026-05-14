@@ -556,6 +556,9 @@ def main() -> int:
     parser.add_argument("--out", default=DEFAULT_OUT)
     args = parser.parse_args()
 
+    if args.range_minutes < 10:
+        args.range_minutes = 10
+
     end = int(time.time())
     start = end - args.range_minutes * 60 + args.step
     base_url = resolve_base_url(args.config, args.base_url)

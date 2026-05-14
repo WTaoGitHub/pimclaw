@@ -861,6 +861,7 @@ function createCliPlannerAgentApi(ctx: OpenClawPluginServiceContext): OpenClawAg
             ? [
                 '--deliver',
                 '--reply-channel', options.delivery.channel,
+                ...(options.delivery.account ? ['--account', options.delivery.account] : []),
                 ...(options.delivery.target ? ['--reply-to', options.delivery.target] : []),
               ]
             : []),
@@ -1425,6 +1426,10 @@ function buildPimClawTools() {
           type: 'number',
           description: 'Return time-series [timestamp, value] pairs over this many minutes (step ~15s). Use 5 to match the Head Agent cron interval.',
         },
+        suppressAutoSubmit: {
+          type: 'boolean',
+          description: 'When true, skip runtime guardrail auto-submission. Use in scout/chart-only queries to avoid creating anomaly tasks.',
+        },
       },
     },
     async execute(sessionId: string, params: Record<string, unknown>) {
@@ -1576,30 +1581,32 @@ function buildPimClawTools() {
 
       if (runtimeAnomalyHints.length > 0 && anomalyReceiver) {
         try {
-          const actionableEvents = runtimeAnomalyHints
-            .filter((hint) => hint.actionRequired === 'submit_anomaly')
-            .map((hint) => ({
-              type: hint.type,
-              metricName: hint.metricName,
-              currentValue: hint.currentValue,
-              previousValue: hint.previousValue,
-              severity: hint.severity,
-              deploymentName: hint.deploymentName,
-              hardwareName: hint.hardwareName,
-              gpuType: hint.gpuType,
-              reasoning: `[runtime guardrail] ${hint.reason}`,
-            }));
-          if (actionableEvents.length > 0) {
-            const validated = await anomalyReceiver.receive(actionableEvents);
-            autoSubmittedAnomalies.push(
-              ...validated.map((event) => ({
-                eventId: event.eventId,
-                taskId: event.taskId,
-                metricName: event.metricName,
-                deploymentName: event.deploymentName,
-                severity: event.severity,
-              })),
-            );
+          if (!params.suppressAutoSubmit) {
+            const actionableEvents = runtimeAnomalyHints
+              .filter((hint) => hint.actionRequired === 'submit_anomaly')
+              .map((hint) => ({
+                type: hint.type,
+                metricName: hint.metricName,
+                currentValue: hint.currentValue,
+                previousValue: hint.previousValue,
+                severity: hint.severity,
+                deploymentName: hint.deploymentName,
+                hardwareName: hint.hardwareName,
+                gpuType: hint.gpuType,
+                reasoning: `[runtime guardrail] ${hint.reason}`,
+              }));
+            if (actionableEvents.length > 0) {
+              const validated = await anomalyReceiver.receive(actionableEvents);
+              autoSubmittedAnomalies.push(
+                ...validated.map((event) => ({
+                  eventId: event.eventId,
+                  taskId: event.taskId,
+                  metricName: event.metricName,
+                  deploymentName: event.deploymentName,
+                  severity: event.severity,
+                })),
+              );
+            }
           }
         } catch (err) {
           autoSubmittedAnomalies.push({
