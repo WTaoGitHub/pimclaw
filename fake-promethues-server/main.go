@@ -16,43 +16,60 @@ import (
 )
 
 type metricProfile struct {
-	Bases      []float64
+	Good       float64
+	Bad        float64
+	VeryBad    float64
 	Jitter     float64
 	MetricName string
 }
 
 var metricProfiles = map[string]metricProfile{
 	"ttft": {
-		Bases:      []float64{0.15, 0.13, 0.45},
-		Jitter:     0.08,
+		Good:       0.150,
+		Bad:        18.0,
+		VeryBad:    30.0,
+		Jitter:     0.06,
 		MetricName: "sglang:time_to_first_token_seconds",
 	},
 	"tpot": {
-		Bases:      []float64{0.020, 0.022, 0.055},
-		Jitter:     0.05,
+		Good:       0.016,
+		Bad:        0.900,
+		VeryBad:    1.200,
+		Jitter:     0.06,
 		MetricName: "sglang:inter_token_latency_seconds",
 	},
 	"qps": {
-		Bases:      []float64{12.0, 13.5, 5.5},
+		Good:       12.0,
+		Bad:        4.0,
+		VeryBad:    0.2,
 		Jitter:     0.10,
 		MetricName: "sglang:num_requests_total",
 	},
 	"throughput": {
-		Bases:      []float64{480, 510, 280},
+		Good:       48,
+		Bad:        0.8,
+		VeryBad:    0,
 		Jitter:     0.08,
 		MetricName: "sglang:generation_tokens_total",
 	},
 	"gpu_utilization": {
-		Bases:      []float64{0.65, 0.70, 0.97},
+		Good:       0.88,
+		Bad:        0.48,
+		VeryBad:    1.00,
 		Jitter:     0.05,
 		MetricName: "sglang:token_usage",
 	},
 	"error_rate": {
-		Bases:      []float64{0.005, 0.003, 0.08},
-		Jitter:     0.15,
+		Good:       0.005,
+		Bad:        20.0,
+		VeryBad:    25.0,
+		Jitter:     0.10,
 		MetricName: "sglang:num_aborted_requests_total",
 	},
 }
+
+var metricKeys = []string{"ttft", "tpot", "qps", "throughput", "gpu_utilization", "error_rate"}
+var anomalyMetricKeys = []string{"ttft", "tpot", "throughput", "gpu_utilization", "error_rate"}
 
 var vllmLabels = map[string]string{
 	"container":        "main",
@@ -199,7 +216,8 @@ func metricMeta(query, metricKey string, deploymentIndex int) (map[string]string
 
 const (
 	scrapeInterval = 15 * time.Second
-	maxHistory     = 3600
+	historyWindow  = 24 * time.Hour
+	maxHistory     = int(historyWindow / scrapeInterval)
 )
 
 type point struct {
@@ -208,72 +226,40 @@ type point struct {
 }
 
 type metricsStore struct {
-	cycleMinutes     int
-	cycleSeconds     float64
-	fullCycleSeconds float64
-	startTime        float64
-	seed             int64
-	normalSpread     float64
-	anomalySpread    float64
-	forceQueryShock  bool
-	virtualNow       float64
-	lastGenerated    float64
-	remediated       bool
-	forceAnomaly     bool
-	lastAction       string
-	lastActionAt     float64
-	lastRecoveredAt  float64
-	data             map[string][]point
-	mu               sync.Mutex
+	startTime       float64
+	seed            int64
+	normalSpread    float64
+	anomalySpread   float64
+	virtualNow      float64
+	lastGenerated   float64
+	remediated      bool
+	forceAnomaly    bool
+	anomalyMetrics  []string
+	lastAction      string
+	lastActionAt    float64
+	lastRecoveredAt float64
+	data            map[string][]point
+	mu              sync.Mutex
 }
 
 func newMetricsStore(cycleMinutes int, normalSpread float64, anomalySpread float64, forceQueryShock bool) *metricsStore {
-	now := float64(time.Now().Unix())
+	_ = cycleMinutes
+	_ = forceQueryShock
+	now := alignToInterval(float64(time.Now().Unix()))
 	s := &metricsStore{
-		cycleMinutes:     cycleMinutes,
-		cycleSeconds:     float64(cycleMinutes * 60),
-		fullCycleSeconds: float64(cycleMinutes * 60 * 3),
-		startTime:        now,
-		seed:             time.Now().UnixNano(),
-		normalSpread:     normalSpread,
-		anomalySpread:    anomalySpread,
-		forceQueryShock:  forceQueryShock,
-		virtualNow:       now,
-		lastGenerated:    now - 600,
-		data:             make(map[string][]point),
+		startTime:     now,
+		seed:          time.Now().UnixNano(),
+		normalSpread:  normalSpread,
+		anomalySpread: anomalySpread,
+		virtualNow:    now,
+		lastGenerated: now - historyWindow.Seconds(),
+		data:          make(map[string][]point),
 	}
-	for k := range metricProfiles {
+	for _, k := range metricKeys {
 		s.data[k] = make([]point, 0, maxHistory)
 	}
 	s.generateUpTo(now)
 	return s
-}
-
-func (s *metricsStore) cycleIndex(ts float64) int {
-	elapsed := ts - s.startTime
-	pos := math.Mod(elapsed, s.fullCycleSeconds)
-	if pos < 0 {
-		pos += s.fullCycleSeconds
-	}
-	idx := int(pos / s.cycleSeconds)
-	if idx > 2 {
-		return 2
-	}
-	if idx < 0 {
-		return 0
-	}
-	return idx
-}
-
-func (s *metricsStore) effectiveCycleIndex(ts float64) int {
-	idx := s.cycleIndex(ts)
-	if s.forceAnomaly {
-		return 2
-	}
-	if s.remediated && idx == 2 {
-		return 1
-	}
-	return idx
 }
 
 func seededRand(metricKey string, bucket int64) *rand.Rand {
@@ -290,54 +276,52 @@ func seededRand(metricKey string, bucket int64) *rand.Rand {
 	return rand.New(rand.NewSource(h))
 }
 
-func (s *metricsStore) cycleNumber(ts float64) int64 {
-	elapsed := ts - s.startTime
-	if elapsed < 0 {
-		return 0
-	}
-	return int64(elapsed / s.cycleSeconds)
-}
-
-func (s *metricsStore) cycleFactor(metricKey string, ts float64, cycleIndex int) float64 {
-	cycleNumber := s.cycleNumber(ts)
-	bucket := cycleNumber + int64(cycleIndex)*1_000_003 + s.seed
-	r := seededRand(metricKey, bucket)
-	if cycleIndex == 2 {
-		return 1 + ((r.Float64()*2)-1)*s.anomalySpread
-	}
-	return 1 + ((r.Float64()*2)-1)*s.normalSpread
-}
-
-func (s *metricsStore) shockFactor(metricKey string, ts float64, shockHigh bool) float64 {
-	bucket := int64(alignToInterval(ts)) + s.seed
-	r := seededRand(metricKey, bucket)
-	switch metricKey {
-	case "qps", "throughput":
-		if shockHigh {
-			return 3.0 + r.Float64()*0.9
-		}
-		return 0.04 + r.Float64()*0.06
-	case "gpu_utilization":
-		if shockHigh {
-			return 1.8 + r.Float64()*0.4
-		}
-		return 0.05 + r.Float64()*0.05
-	default:
-		if shockHigh {
-			return 3.2 + r.Float64()*0.8
-		}
-		return 0.12 + r.Float64()*0.08
-	}
-}
-
 func (s *metricsStore) generateValue(metricKey string, ts float64) float64 {
 	p := metricProfiles[metricKey]
-	idx := s.effectiveCycleIndex(ts)
-	base := p.Bases[idx] * s.cycleFactor(metricKey, ts, idx)
+	base := p.Good
+	spread := s.normalSpread
+	if s.forceAnomaly && s.isAnomalyMetricLocked(metricKey) {
+		base = p.Bad
+		spread = s.anomalySpread
+	}
+	if p.VeryBad == 0 && base == 0 {
+		return 0
+	}
 	bucket := int64(ts) / int64(scrapeInterval.Seconds())
 	r := seededRand(metricKey, bucket)
 	jitter := base * p.Jitter * (r.Float64()*2 - 1)
-	return base + jitter
+	drift := base * spread * (r.Float64()*2 - 1)
+	value := base + jitter + drift
+	if value < 0 {
+		return 0
+	}
+	if metricKey == "gpu_utilization" && value > 1 {
+		return 1
+	}
+	return value
+}
+
+func (s *metricsStore) isAnomalyMetricLocked(metricKey string) bool {
+	for _, selected := range s.anomalyMetrics {
+		if selected == metricKey {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *metricsStore) pickAnomalyMetricsLocked() []string {
+	bucket := int64(s.virtualNow) + s.seed
+	r := seededRand("anomaly-metric-selection", bucket)
+	count := 1 + r.Intn(2)
+	available := append([]string(nil), anomalyMetricKeys...)
+	selected := make([]string, 0, count)
+	for len(selected) < count && len(available) > 0 {
+		idx := r.Intn(len(available))
+		selected = append(selected, available[idx])
+		available = append(available[:idx], available[idx+1:]...)
+	}
+	return selected
 }
 
 func alignToInterval(ts float64) float64 {
@@ -348,7 +332,7 @@ func alignToInterval(ts float64) float64 {
 func (s *metricsStore) generateUpTo(target float64) {
 	t := alignToInterval(s.lastGenerated + scrapeInterval.Seconds())
 	for t <= target {
-		for key := range metricProfiles {
+		for _, key := range metricKeys {
 			v := s.generateValue(key, t)
 			s.data[key] = append(s.data[key], point{TS: t, Val: v})
 		}
@@ -362,24 +346,40 @@ func (s *metricsStore) generateUpTo(target float64) {
 	}
 }
 
-func (s *metricsStore) resetHistoryLocked() {
-	for k := range metricProfiles {
-		s.data[k] = make([]point, 0, maxHistory)
+func (s *metricsStore) trimHistoryLocked() {
+	for key, points := range s.data {
+		if len(points) > maxHistory {
+			s.data[key] = points[len(points)-maxHistory:]
+		}
 	}
-	s.lastGenerated = s.virtualNow - 600
-	s.generateUpTo(s.virtualNow)
+}
+
+func (s *metricsStore) backfillRecentWindowLocked() {
+	start := alignToInterval(s.virtualNow - 5*60 + scrapeInterval.Seconds())
+	for t := start; t <= s.virtualNow; t += scrapeInterval.Seconds() {
+		for _, key := range metricKeys {
+			v := s.generateValue(key, t)
+			s.data[key] = append(s.data[key], point{TS: t, Val: v})
+		}
+	}
+	s.lastGenerated = s.virtualNow
+	s.trimHistoryLocked()
 }
 
 func (s *metricsStore) scrape() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	now := alignToInterval(float64(time.Now().Unix()))
+	if now > s.virtualNow {
+		s.virtualNow = now
+	}
 	s.generateUpTo(s.virtualNow)
 }
 
 func (s *metricsStore) advanceWindow(seconds float64) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.virtualNow += seconds
+	s.virtualNow = alignToInterval(s.virtualNow + seconds)
 	s.generateUpTo(s.virtualNow)
 }
 
@@ -397,13 +397,6 @@ func (s *metricsStore) getInstant(metricKey string) *point {
 	if len(pts) == 0 {
 		return nil
 	}
-	if s.forceQueryShock && !s.remediated && !s.forceAnomaly {
-		shockHigh := s.cycleNumber(s.virtualNow)%2 == 0
-		value := s.generateValue(metricKey, s.virtualNow)
-		profileBase := metricProfiles[metricKey].Bases[s.cycleIndex(s.virtualNow)]
-		value = profileBase * s.shockFactor(metricKey, s.virtualNow, shockHigh)
-		return &point{TS: alignToInterval(s.virtualNow), Val: value}
-	}
 	p := pts[len(pts)-1]
 	return &p
 }
@@ -412,37 +405,6 @@ func (s *metricsStore) getRange(metricKey string, start, end float64, step int) 
 	s.scrape()
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.forceQueryShock && !s.forceAnomaly {
-		if s.remediated {
-			pts := s.data[metricKey]
-			if len(pts) == 0 {
-				return [][2]any{}
-			}
-			pointMap := make(map[int64]float64, len(pts))
-			for _, p := range pts {
-				k := int64(alignToInterval(p.TS))
-				pointMap[k] = p.Val
-			}
-			res := make([][2]any, 0)
-			for t := math.Floor(start); t <= end; t += float64(step) {
-				k := int64(alignToInterval(t))
-				v, ok := pointMap[k]
-				if !ok {
-					v = s.generateValue(metricKey, t)
-				}
-				res = append(res, [2]any{t, fmt.Sprintf("%.6f", v)})
-			}
-			return res
-		}
-		shockHigh := s.cycleNumber(s.virtualNow)%2 == 0
-		res := make([][2]any, 0)
-		for t := math.Floor(start); t <= end; t += float64(step) {
-			profileBase := metricProfiles[metricKey].Bases[s.cycleIndex(s.virtualNow)]
-			value := profileBase * s.shockFactor(metricKey, t, shockHigh)
-			res = append(res, [2]any{t, fmt.Sprintf("%.6f", value)})
-		}
-		return res
-	}
 	pts := s.data[metricKey]
 	if len(pts) == 0 {
 		return [][2]any{}
@@ -457,7 +419,7 @@ func (s *metricsStore) getRange(metricKey string, start, end float64, step int) 
 		k := int64(alignToInterval(t))
 		v, ok := pointMap[k]
 		if !ok {
-			v = s.generateValue(metricKey, t)
+			continue
 		}
 		res = append(res, [2]any{t, fmt.Sprintf("%.6f", v)})
 	}
@@ -466,113 +428,78 @@ func (s *metricsStore) getRange(metricKey string, start, end float64, step int) 
 
 func (s *metricsStore) currentPhase() string {
 	s.mu.Lock()
-	remediated := s.remediated
 	forceAnomaly := s.forceAnomaly
-	virtualNow := s.virtualNow
 	s.mu.Unlock()
-	if remediated {
-		return "REMEDIATED-NORMAL"
-	}
 	if forceAnomaly {
 		return "ANOMALY"
 	}
-	idx := s.cycleIndex(virtualNow)
-	if idx == 2 {
-		return "ANOMALY"
-	}
-	return fmt.Sprintf("NORMAL-%d", idx+1)
+	return "NORMAL"
 }
 
 func (s *metricsStore) nextAnomalyInSeconds() float64 {
-	now := s.currentVirtualNow()
 	s.mu.Lock()
-	remediated := s.remediated
 	forceAnomaly := s.forceAnomaly
 	s.mu.Unlock()
-	if remediated {
-		return -1
-	}
 	if forceAnomaly {
 		return 0
 	}
-	elapsed := now - s.startTime
-	pos := math.Mod(elapsed, s.fullCycleSeconds)
-	if pos < 0 {
-		pos += s.fullCycleSeconds
-	}
-	anomalyStart := s.cycleSeconds * 2
-	if s.cycleIndex(now) == 2 {
-		return 0
-	}
-	if pos < anomalyStart {
-		return anomalyStart - pos
-	}
-	return s.fullCycleSeconds - pos + anomalyStart
+	return -1
 }
 
 func (s *metricsStore) applyAction(action string) map[string]any {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.remediated = true
+	s.remediated = false
 	s.forceAnomaly = false
+	s.anomalyMetrics = nil
 	s.lastAction = action
 	s.lastActionAt = s.virtualNow
-	s.resetHistoryLocked()
+	s.backfillRecentWindowLocked()
 	return s.stateLocked()
 }
 
-func (s *metricsStore) recoverAnomaly() map[string]any {
+func (s *metricsStore) setNormalMode() map[string]any {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.remediated = false
+	s.forceAnomaly = false
+	s.anomalyMetrics = nil
+	s.backfillRecentWindowLocked()
+	return s.stateLocked()
+}
+
+func (s *metricsStore) setAnomalyMode() map[string]any {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.remediated = false
 	s.forceAnomaly = true
+	s.anomalyMetrics = s.pickAnomalyMetricsLocked()
 	s.lastRecoveredAt = s.virtualNow
-	s.resetHistoryLocked()
+	s.backfillRecentWindowLocked()
 	return s.stateLocked()
 }
 
 func (s *metricsStore) stateLocked() map[string]any {
 	nextAnomaly := any(nil)
-	if !s.remediated {
-		if s.forceAnomaly {
-			nextAnomaly = float64(0)
-		} else {
-			elapsed := s.virtualNow - s.startTime
-			pos := math.Mod(elapsed, s.fullCycleSeconds)
-			if pos < 0 {
-				pos += s.fullCycleSeconds
-			}
-			anomalyStart := s.cycleSeconds * 2
-			if s.cycleIndex(s.virtualNow) == 2 {
-				nextAnomaly = float64(0)
-			} else if pos < anomalyStart {
-				nextAnomaly = math.Round((anomalyStart-pos)*10) / 10
-			} else {
-				nextAnomaly = math.Round((s.fullCycleSeconds-pos+anomalyStart)*10) / 10
-			}
-		}
+	if s.forceAnomaly {
+		nextAnomaly = float64(0)
 	}
-	phase := "REMEDIATED-NORMAL"
-	if !s.remediated {
-		if s.forceAnomaly {
-			phase = "ANOMALY"
-		} else {
-			idx := s.cycleIndex(s.virtualNow)
-			if idx == 2 {
-				phase = "ANOMALY"
-			} else {
-				phase = fmt.Sprintf("NORMAL-%d", idx+1)
-			}
-		}
+	phase := "NORMAL"
+	if s.forceAnomaly {
+		phase = "ANOMALY"
 	}
 	return map[string]any{
 		"phase":                   phase,
 		"remediated":              s.remediated,
 		"force_anomaly":           s.forceAnomaly,
+		"anomaly_metrics":         append([]string(nil), s.anomalyMetrics...),
 		"last_action":             s.lastAction,
 		"last_action_at":          s.lastActionAt,
 		"last_recovered_at":       s.lastRecoveredAt,
 		"next_anomaly_in_seconds": nextAnomaly,
+		"scrape_interval_seconds": scrapeInterval.Seconds(),
+		"history_seconds":         historyWindow.Seconds(),
+		"max_points_per_metric":   maxHistory,
 		"virtual_now":             s.virtualNow,
 	}
 }
@@ -675,19 +602,12 @@ type fakeActionRequest struct {
 	DeploymentName string `json:"deploymentName"`
 }
 
+type fakeModeRequest struct {
+	Mode string `json:"mode"`
+}
+
 func (s *fakePromServer) ensureAdvancedOncePerCycle(endSec float64) {
-	cycleEnd := int64(math.Floor(endSec))
-	s.rangeMu.Lock()
-	defer s.rangeMu.Unlock()
-	if !s.hasSeenFirstCycle {
-		s.lastQueryCycleEndSec = cycleEnd
-		s.hasSeenFirstCycle = true
-		return
-	}
-	if cycleEnd != s.lastQueryCycleEndSec {
-		s.store.advanceWindow(s.store.cycleSeconds)
-		s.lastQueryCycleEndSec = cycleEnd
-	}
+	_ = endSec
 }
 
 func (s *fakePromServer) sendJSON(w http.ResponseWriter, code int, data any) {
@@ -722,17 +642,18 @@ func (s *fakePromServer) handleStatus(w http.ResponseWriter, _ *http.Request) {
 	}
 	info := map[string]any{
 		"phase":                   s.store.currentPhase(),
-		"cycle_index":             s.store.cycleIndex(virtualNow),
 		"next_anomaly_in_seconds": nextAnomaly,
-		"cycle_minutes":           s.store.cycleMinutes,
-		"full_cycle_minutes":      s.store.cycleMinutes * 3,
 		"uptime_seconds":          math.Round((virtualNow-s.store.startTime)*10) / 10,
 		"virtual_now":             virtualNow,
+		"scrape_interval_seconds": scrapeInterval.Seconds(),
+		"history_seconds":         historyWindow.Seconds(),
+		"max_points_per_metric":   maxHistory,
 		"metrics":                 []string{"ttft", "tpot", "qps", "throughput", "gpu_utilization", "error_rate"},
 	}
 	s.store.mu.Lock()
 	info["remediated"] = s.store.remediated
 	info["force_anomaly"] = s.store.forceAnomaly
+	info["anomaly_metrics"] = append([]string(nil), s.store.anomalyMetrics...)
 	info["last_action"] = s.store.lastAction
 	info["last_action_at"] = s.store.lastActionAt
 	info["last_recovered_at"] = s.store.lastRecoveredAt
@@ -801,15 +722,38 @@ func (s *fakePromServer) handleFakeAction(w http.ResponseWriter, r *http.Request
 	s.sendJSON(w, http.StatusOK, state)
 }
 
-func (s *fakePromServer) handleRecoverAnomaly(w http.ResponseWriter, r *http.Request) {
+func (s *fakePromServer) handleMode(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		s.sendJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "use POST"})
 		return
 	}
-	state := s.store.recoverAnomaly()
-	state["ok"] = true
-	state["message"] = "fake metrics recovered to anomaly mode"
-	s.sendJSON(w, http.StatusOK, state)
+
+	req := fakeModeRequest{Mode: r.URL.Query().Get("mode")}
+	if r.Body != nil {
+		defer r.Body.Close()
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil && err.Error() != "EOF" {
+			s.sendJSON(w, http.StatusBadRequest, map[string]any{"error": fmt.Sprintf("invalid JSON body: %v", err)})
+			return
+		}
+	}
+
+	switch strings.ToLower(strings.TrimSpace(req.Mode)) {
+	case "normal", "good", "healthy":
+		state := s.store.setNormalMode()
+		state["ok"] = true
+		state["message"] = "fake metrics switched to normal mode"
+		s.sendJSON(w, http.StatusOK, state)
+	case "anomaly", "bad", "unhealthy":
+		state := s.store.setAnomalyMode()
+		state["ok"] = true
+		state["message"] = "fake metrics switched to anomaly mode"
+		s.sendJSON(w, http.StatusOK, state)
+	default:
+		s.sendJSON(w, http.StatusBadRequest, map[string]any{
+			"error":          "unsupported mode",
+			"supportedModes": []string{"normal", "anomaly"},
+		})
+	}
 }
 
 func (s *fakePromServer) handleInstantQuery(w http.ResponseWriter, r *http.Request) {
@@ -959,8 +903,7 @@ func (s *fakePromServer) handler() http.Handler {
 	mux.HandleFunc("/_fake/status", s.handleStatus)
 	mux.HandleFunc("/_fake/action", s.handleFakeAction)
 	mux.HandleFunc("/_fake/actions", s.handleFakeAction)
-	mux.HandleFunc("/_fake/recover", s.handleRecoverAnomaly)
-	mux.HandleFunc("/_fake/recover-anomaly", s.handleRecoverAnomaly)
+	mux.HandleFunc("/_fake/mode", s.handleMode)
 	mux.HandleFunc("/", s.rootFallback)
 
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -977,7 +920,7 @@ func main() {
 		}
 	}
 	port := flag.Int("port", defaultPort, "Listen port")
-	cycleMinutes := flag.Int("cycle-minutes", 5, "Minutes per cycle window")
+	cycleMinutes := flag.Int("cycle-minutes", 5, "Deprecated; retained for CLI compatibility")
 	flag.Parse()
 
 	deploymentCount := 2
@@ -1017,16 +960,25 @@ func main() {
 
 	nextAnomaly := store.nextAnomalyInSeconds()
 	pts := len(store.data["ttft"])
+	go func() {
+		ticker := time.NewTicker(scrapeInterval)
+		defer ticker.Stop()
+		for range ticker.C {
+			store.scrape()
+		}
+	}()
 
 	fmt.Printf("Fake Prometheus listening on port %d\n", *port)
-	fmt.Printf("Cycle: %dmin per window x 3 = %dmin full cycle\n", *cycleMinutes, *cycleMinutes*3)
-	fmt.Println("Pattern: NORMAL-1 -> NORMAL-2 -> ANOMALY -> repeat")
+	fmt.Printf("Mode: starts in NORMAL; POST /_fake/mode switches normal/anomaly\n")
 	fmt.Printf("Current phase: %s\n", store.currentPhase())
-	fmt.Printf("Next anomaly in: %.0fs (%.1fmin)\n", nextAnomaly, nextAnomaly/60)
-	fmt.Printf("Pre-filled: %d data points per metric (10 min history)\n", pts)
+	if nextAnomaly >= 0 {
+		fmt.Printf("Next anomaly in: %.0fs (%.1fmin)\n", nextAnomaly, nextAnomaly/60)
+	}
+	fmt.Printf("Scrape interval: %.0fs\n", scrapeInterval.Seconds())
+	fmt.Printf("Pre-filled: %d data points per metric (24h rolling history)\n", pts)
 	fmt.Printf("Normal randomness spread: +/-%.2f around the normal baseline (set FAKE_NORMAL_RANDOMNESS)\n", normalSpread)
 	fmt.Printf("Anomaly randomness spread: +/-%.2f around the anomaly baseline (set FAKE_ANOMALY_RANDOMNESS)\n", anomalySpread)
-	fmt.Printf("Force anomaly every query: %t (set FAKE_FORCE_ANOMALY_EVERY_QUERY)\n", forceQueryShock)
+	fmt.Printf("Force anomaly every query: %t (deprecated; mode APIs now control anomaly state)\n", forceQueryShock)
 	fmt.Printf("Status: http://localhost:%d/_fake/status\n\n", *port)
 	fmt.Printf("Deployment series per metric: %d (set FAKE_DEPLOYMENT_COUNT to change)\n\n", deploymentCount)
 

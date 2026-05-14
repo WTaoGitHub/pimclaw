@@ -78,7 +78,7 @@ The script writes SVG using only Python standard library. It then attempts fast 
 qlmanage -t -s 1600 -o <output-dir> <chart.svg>
 ```
 
-If `qlmanage` is unavailable or fails, keep the SVG and show that file instead.
+If `qlmanage` is unavailable or fails, the script renders a simple PNG line chart with a pure-Python fallback. Prefer returning the PNG path whenever the script prints one.
 
 ## Interpretation
 

@@ -13,6 +13,7 @@ import sys
 import time
 import urllib.parse
 import urllib.request
+import zlib
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -221,6 +222,18 @@ def esc(text: Any) -> str:
     return str(text).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 
+def axis_bounds(values: list[float]) -> tuple[float, float]:
+    """Use a tight per-metric axis so runtime drift is visible at a glance."""
+    lo, hi = min(values), max(values)
+    span = hi - lo
+    center = (hi + lo) / 2
+    if span == 0:
+        pad = max(abs(center) * 0.03, 0.001)
+    else:
+        pad = span * 0.06
+    return max(0, lo - pad), hi + pad
+
+
 def render_svg(series: dict[str, list[tuple[float, float]]], out: Path, title: str, subtitle: str) -> None:
     width, height = 1200, 760
     ml, mt = 70, 78
@@ -249,9 +262,7 @@ def render_svg(series: dict[str, list[tuple[float, float]]], out: Path, title: s
         vals = [v for _, v in points]
         col, row = idx % 2, idx // 2
         x, y = ml + col * (col_w + 36), mt + row * (row_h + 18)
-        lo, hi = min(vals), max(vals)
-        pad = (hi - lo) * 0.18 or hi * 0.1 or 1
-        lo, hi = max(0, lo - pad), hi + pad
+        lo, hi = axis_bounds(vals)
         gx, gy, gw, gh = x + 54, y + 40, col_w - 76, row_h - 62
         poly = " ".join(f"{sx(ts, gx, gw):.1f},{sy(v, lo, hi, gy, gh):.1f}" for ts, v in points)
 
@@ -286,6 +297,169 @@ def render_png_with_qlmanage(svg: Path) -> Path | None:
     except subprocess.CalledProcessError:
         return None
     return png if png.exists() else None
+
+
+FONT_3X5 = {
+    " ": ["000", "000", "000", "000", "000"],
+    "-": ["000", "000", "111", "000", "000"],
+    ".": ["000", "000", "000", "000", "010"],
+    "/": ["001", "001", "010", "100", "100"],
+    "%": ["101", "001", "010", "100", "101"],
+    "(": ["010", "100", "100", "100", "010"],
+    ")": ["010", "001", "001", "001", "010"],
+    "0": ["111", "101", "101", "101", "111"],
+    "1": ["010", "110", "010", "010", "111"],
+    "2": ["111", "001", "111", "100", "111"],
+    "3": ["111", "001", "111", "001", "111"],
+    "4": ["101", "101", "111", "001", "001"],
+    "5": ["111", "100", "111", "001", "111"],
+    "6": ["111", "100", "111", "101", "111"],
+    "7": ["111", "001", "010", "010", "010"],
+    "8": ["111", "101", "111", "101", "111"],
+    "9": ["111", "101", "111", "001", "111"],
+    "A": ["010", "101", "111", "101", "101"],
+    "B": ["110", "101", "110", "101", "110"],
+    "C": ["111", "100", "100", "100", "111"],
+    "D": ["110", "101", "101", "101", "110"],
+    "E": ["111", "100", "110", "100", "111"],
+    "F": ["111", "100", "110", "100", "100"],
+    "G": ["111", "100", "101", "101", "111"],
+    "H": ["101", "101", "111", "101", "101"],
+    "I": ["111", "010", "010", "010", "111"],
+    "J": ["001", "001", "001", "101", "111"],
+    "K": ["101", "101", "110", "101", "101"],
+    "L": ["100", "100", "100", "100", "111"],
+    "M": ["101", "111", "111", "101", "101"],
+    "N": ["101", "111", "111", "111", "101"],
+    "O": ["111", "101", "101", "101", "111"],
+    "P": ["111", "101", "111", "100", "100"],
+    "Q": ["111", "101", "101", "111", "001"],
+    "R": ["111", "101", "111", "110", "101"],
+    "S": ["111", "100", "111", "001", "111"],
+    "T": ["111", "010", "010", "010", "010"],
+    "U": ["101", "101", "101", "101", "111"],
+    "V": ["101", "101", "101", "101", "010"],
+    "W": ["101", "101", "111", "111", "101"],
+    "X": ["101", "101", "010", "101", "101"],
+    "Y": ["101", "101", "010", "010", "010"],
+    "Z": ["111", "001", "010", "100", "111"],
+}
+
+
+def render_png_native(series: dict[str, list[tuple[float, float]]], png: Path, title: str, subtitle: str) -> Path:
+    width, height = 1200, 760
+    bg = (251, 250, 247)
+    pixels = bytearray(bg * width * height)
+    all_ts = [ts for points in series.values() for ts, _ in points]
+    min_ts, max_ts = min(all_ts), max(all_ts)
+
+    def rgb(hex_color: str) -> tuple[int, int, int]:
+        h = hex_color.lstrip("#")
+        return int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
+
+    def put(x: int, y: int, color: tuple[int, int, int]) -> None:
+        if 0 <= x < width and 0 <= y < height:
+            i = (y * width + x) * 3
+            pixels[i : i + 3] = bytes(color)
+
+    def rect(x: int, y: int, w: int, h: int, color: tuple[int, int, int], fill: bool = False) -> None:
+        if fill:
+            for yy in range(y, y + h):
+                for xx in range(x, x + w):
+                    put(xx, yy, color)
+            return
+        for xx in range(x, x + w):
+            put(xx, y, color)
+            put(xx, y + h - 1, color)
+        for yy in range(y, y + h):
+            put(x, yy, color)
+            put(x + w - 1, yy, color)
+
+    def line(x0: int, y0: int, x1: int, y1: int, color: tuple[int, int, int], thickness: int = 1) -> None:
+        dx, dy = abs(x1 - x0), -abs(y1 - y0)
+        sx = 1 if x0 < x1 else -1
+        sy = 1 if y0 < y1 else -1
+        err = dx + dy
+        while True:
+            for ox in range(-(thickness // 2), thickness // 2 + 1):
+                for oy in range(-(thickness // 2), thickness // 2 + 1):
+                    put(x0 + ox, y0 + oy, color)
+            if x0 == x1 and y0 == y1:
+                break
+            e2 = 2 * err
+            if e2 >= dy:
+                err += dy
+                x0 += sx
+            if e2 <= dx:
+                err += dx
+                y0 += sy
+
+    def dot(cx: int, cy: int, r: int, color: tuple[int, int, int]) -> None:
+        for yy in range(cy - r, cy + r + 1):
+            for xx in range(cx - r, cx + r + 1):
+                if (xx - cx) ** 2 + (yy - cy) ** 2 <= r * r:
+                    put(xx, yy, color)
+
+    def text(x: int, y: int, value: str, color: tuple[int, int, int], scale: int = 3) -> None:
+        cx = x
+        for ch in value.upper():
+            glyph = FONT_3X5.get(ch, FONT_3X5[" "])
+            for gy, row in enumerate(glyph):
+                for gx, bit in enumerate(row):
+                    if bit == "1":
+                        rect(cx + gx * scale, y + gy * scale, scale, scale, color, True)
+            cx += 4 * scale
+
+    def sx(ts: float, x: int, w: int) -> int:
+        return int(x + ((ts - min_ts) / ((max_ts - min_ts) or 1)) * w)
+
+    def sy(value: float, lo: float, hi: float, y: int, h: int) -> int:
+        return int(y + h - ((value - lo) / ((hi - lo) or 1)) * h)
+
+    text(70, 28, title, (31, 41, 51), 4)
+    text(70, 56, subtitle[:95], (100, 112, 125), 2)
+
+    ml, mt = 70, 86
+    col_w = int((width - ml - 30 - 36) / 2)
+    row_h = int((height - mt - 54 - 36) / 3)
+    for idx, spec in enumerate(METRICS):
+        points = series.get(spec.key, [])
+        if not points:
+            continue
+        vals = [v for _, v in points]
+        col, row = idx % 2, idx // 2
+        x, y = int(ml + col * (col_w + 36)), int(mt + row * (row_h + 18))
+        rect(x, y, col_w, row_h, (255, 255, 255), True)
+        rect(x, y, col_w, row_h, (215, 221, 227), False)
+        color = rgb(spec.color)
+        text(x + 14, y + 16, f"{spec.label} {fmt_value(vals[-1], spec)}", (36, 49, 63), 2)
+        gx, gy, gw, gh = x + 54, y + 44, col_w - 76, row_h - 66
+        for k in range(4):
+            yy = int(gy + gh * k / 3)
+            line(gx, yy, gx + gw, yy, (238, 241, 244), 1)
+        line(gx, gy + gh, gx + gw, gy + gh, (207, 214, 221), 1)
+        line(gx, gy, gx, gy + gh, (207, 214, 221), 1)
+        lo, hi = axis_bounds(vals)
+        xy = [(sx(ts, gx, gw), sy(v, lo, hi, gy, gh)) for ts, v in points]
+        for (x0, y0), (x1, y1) in zip(xy, xy[1:]):
+            line(x0, y0, x1, y1, color, 3)
+        for px, py in xy:
+            dot(px, py, 4, color)
+
+    raw = b"".join(b"\x00" + bytes(pixels[y * width * 3 : (y + 1) * width * 3]) for y in range(height))
+    png.parent.mkdir(parents=True, exist_ok=True)
+    with png.open("wb") as fh:
+        def chunk(kind: bytes, data: bytes) -> None:
+            fh.write(len(data).to_bytes(4, "big"))
+            fh.write(kind)
+            fh.write(data)
+            fh.write(zlib.crc32(kind + data).to_bytes(4, "big"))
+
+        fh.write(b"\x89PNG\r\n\x1a\n")
+        chunk("IHDR".encode(), width.to_bytes(4, "big") + height.to_bytes(4, "big") + bytes([8, 2, 0, 0, 0]))
+        chunk("IDAT".encode(), zlib.compress(raw, 6))
+        chunk("IEND".encode(), b"")
+    return png
 
 
 def main() -> int:
@@ -333,6 +507,8 @@ def main() -> int:
     subtitle += f" | {engine} | {base_url}"
     render_svg(collected, out, "PimClaw Runtime Metrics", subtitle)
     png = render_png_with_qlmanage(out)
+    if not png:
+        png = render_png_native(collected, Path(str(out) + ".png"), "PimClaw Runtime Metrics", subtitle)
 
     latest = {}
     for spec in METRICS:
