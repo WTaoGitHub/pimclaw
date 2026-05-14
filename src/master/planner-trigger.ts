@@ -25,13 +25,21 @@ export interface OpenClawAgentApi {
     runTimeoutSeconds: number;
     workspaceDir?: string;
     attachments?: Array<{ type: string; content: string }>;
+    delivery?: PlannerDeliveryConfig;
   }): Promise<void>;
+}
+
+export interface PlannerDeliveryConfig {
+  enabled: boolean;
+  channel: string;
+  target?: string;
 }
 
 export interface PlannerTriggerConfig {
   agentId: string;
   timeoutSeconds: number;
   workspaceDir?: string;
+  delivery?: PlannerDeliveryConfig;
 }
 
 export interface PlannerTriggerPayload {
@@ -244,6 +252,13 @@ export class PlannerTrigger {
         ? `Recent planner memory is attached separately. Use it as advisory context only; do not treat it as a substitute for Perf MCP or Simulator MCP evidence.`
         : 'No prior planner memory context is available for this deployment.',
       JSON.stringify(payload),
+      this.config.delivery?.enabled
+        ? [
+            'After calling pimclaw_plan_task, produce a concise operator update for the matched Feishu channel.',
+            'Use the heading "Planner Key Points" and include only factual key points: taskId, deployment, handled/ignored anomalies, tool probes and evidence status, candidate decision, selected config, and degraded-planning warnings.',
+            'Do NOT reveal private chain-of-thought or hidden reasoning. Summarize the reasoning outcome and evidence instead.',
+          ].join('\n')
+        : 'No external progress delivery is configured for this planner run.',
     ].join('\n\n');
     const attachments = [
       {
@@ -276,6 +291,7 @@ export class PlannerTrigger {
       runTimeoutSeconds: this.config.timeoutSeconds,
       workspaceDir: this.config.workspaceDir,
       attachments,
+      delivery: this.config.delivery,
     });
 
     await new Promise<void>((resolve, reject) => {

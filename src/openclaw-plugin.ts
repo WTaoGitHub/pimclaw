@@ -30,7 +30,7 @@ import { SchedulerAgent } from './master/scheduler-agent.js';
 import { AnomalyReceiver } from './master/anomaly-receiver.js';
 import type { AnomalyEvent } from './master/anomaly-receiver.js';
 import { PlannerTrigger } from './master/planner-trigger.js';
-import type { OpenClawAgentApi } from './master/planner-trigger.js';
+import type { OpenClawAgentApi, PlannerDeliveryConfig } from './master/planner-trigger.js';
 import { FileLogger } from './master/file-logger.js';
 import {
   PrometheusClient,
@@ -857,6 +857,13 @@ function createCliPlannerAgentApi(ctx: OpenClawPluginServiceContext): OpenClawAg
           '--session-id', uuidv4(),
           '--message', plannerInstruction,
           '--timeout', String(options.runTimeoutSeconds),
+          ...(options.delivery?.enabled
+            ? [
+                '--deliver',
+                '--reply-channel', options.delivery.channel,
+                ...(options.delivery.target ? ['--reply-to', options.delivery.target] : []),
+              ]
+            : []),
           '--json',
         ],
         {
@@ -1147,6 +1154,13 @@ function createPimClawService(): OpenClawPluginService {
       // 2. PlannerTrigger — spawns Planner agent via OpenClaw API
       plannerFallbackTaskType = plannerConfig.fallbackTaskType ?? 'scale-up';
       plannerFallbackConfig = plannerConfig.fallbackConfig ?? { replicaDelta: 1 };
+      const plannerDeliveryConfig: PlannerDeliveryConfig | undefined = plannerConfig.delivery?.enabled
+        ? {
+            enabled: true,
+            channel: plannerConfig.delivery.channel ?? 'feishu',
+            target: plannerConfig.delivery.target,
+          }
+        : undefined;
       const plannerAgentApi = selectPlannerAgentApi(
         (ctx as any).openclawApi,
         () => createCliPlannerAgentApi(ctx),
@@ -1160,6 +1174,7 @@ function createPimClawService(): OpenClawPluginService {
         agentId: plannerConfig.agentId ?? 'pimclaw-planner',
         timeoutSeconds: plannerConfig.timeoutSeconds ?? 600,
         workspaceDir: plannerWorkspaceDir,
+        delivery: plannerDeliveryConfig,
       }, registry, plannerMemoryStore, fileLogger);
 
       ctx.logger.info(

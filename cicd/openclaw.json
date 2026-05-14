@@ -346,6 +346,13 @@
           "simMcp": {
             "sseUrl": "http://192.168.4.26:8721/sse"
           },
+          "planner": {
+            "delivery": {
+              "enabled": true,
+              "channel": "feishu",
+              "target": "channel:oc_f305d0c3cf623806cd3f15a6a03dd636"
+            }
+          },
           "engineMcp": {
             "sseUrl": "http://<engine-mcp-host>:<port>/sse",
             "username": "<platform-username>",

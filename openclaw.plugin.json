@@ -21,7 +21,16 @@
           "timeoutSeconds": { "type": "number", "default": 600 },
           "workspaceDir": { "type": "string", "default": ".pimclaw-agents/planner" },
           "fallbackTaskType": { "type": "string", "default": "scale-up" },
-          "fallbackConfig": { "type": "object" }
+          "fallbackConfig": { "type": "object" },
+          "delivery": {
+            "type": "object",
+            "description": "Optional delivery target for planner key-point summaries.",
+            "properties": {
+              "enabled": { "type": "boolean", "default": false },
+              "channel": { "type": "string", "default": "feishu" },
+              "target": { "type": "string", "description": "OpenClaw reply target, for example channel:oc_xxx." }
+            }
+          }
         }
       },
       "headFeedback": {

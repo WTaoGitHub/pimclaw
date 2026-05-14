@@ -318,6 +318,11 @@ events by deployment name and fires a separate Planner invocation for each. Each
 invocation uses an ephemeral session (one-shot, cleanup: delete) and receives only
 the events belonging to its assigned deployment.
 
+When planner delivery is configured, the Planner's final visible response is
+delivered to the matched Feishu channel. That response must contain concise
+operator-facing key points about execution and reasoning outcomes, not private
+chain-of-thought.
+
 ### System Prompt
 
 ```
@@ -338,6 +343,8 @@ Your task:
 4. Simulate candidate configurations (Simulator MCP) to predict outcomes
 5. Optionally search for known solutions (Web Search)
 6. Submit a **single** optimal deployment config via the pimclaw_plan_task tool
+7. Output a concise `Planner Key Points` section for Feishu delivery when
+   delivery is configured
 
 ## Available Data Sources
 
@@ -518,6 +525,17 @@ to determine the right configuration.
   - You MUST NOT submit fabricated evidence text that sounds like a successful Perf MCP query or simulation run when the underlying MCP was `UNAVAILABLE` in this run.
   - The plugin records submitted `pimclaw_plan_task` payloads for debugging. Do not write `planner-output-format-debug.jsonl` from the planner agent.
 
+7. **Publish Feishu key points when delivery is configured.** After calling
+   `pimclaw_plan_task`, output a `Planner Key Points` section containing:
+  - taskId and deployment name
+  - anomalies handled and anomalies ignored
+  - Perf MCP and Simulator MCP availability/results
+  - candidate decision summary
+  - selected config
+  - degraded-planning warnings, if any
+  Do NOT expose private chain-of-thought. Summarize conclusions and evidence
+  only.
+
 ## Output Format
 
 Call pimclaw_plan_task:
@@ -558,4 +576,7 @@ Call pimclaw_plan_task:
 - **Do NOT use placeholder text that looks like real evidence.** If Perf MCP or Simulator MCP is unavailable, the evidence fields MUST clearly state that the data was not collected from the tools.
 - **Do NOT confuse missing configuration with successful evidence collection.** A response like `not configured`, `unavailable`, `not connected`, `tool missing`, or any error payload means the MCP is `UNAVAILABLE`.
 - **Do NOT hide degraded planning.** If Perf or Simulator MCP is unavailable, fall back to a safe default action and explicitly note that degraded planning in your reasoning.
+- **Do NOT expose private chain-of-thought in Feishu.** The delivered planner
+  response should contain concise key points, tool outcomes, evidence status,
+  and the selected plan only.
 ```

@@ -71,6 +71,24 @@ var metricProfiles = map[string]metricProfile{
 var metricKeys = []string{"ttft", "tpot", "qps", "throughput", "gpu_utilization", "error_rate"}
 var anomalyMetricKeys = []string{"ttft", "tpot", "throughput", "gpu_utilization", "error_rate"}
 
+const (
+	defaultDeploymentName = "Qwen/Qwen3-32B"
+	defaultModelName      = "Qwen/Qwen3-32B"
+	defaultHardwareName   = "NVIDIA H800_SXM"
+)
+
+type deploymentInfo struct {
+	DeploymentName string `json:"deploymentName"`
+	ModelName      string `json:"modelName"`
+	HardwareName   string `json:"hardware_name"`
+}
+
+var configuredDeploymentInfo = deploymentInfo{
+	DeploymentName: defaultDeploymentName,
+	ModelName:      defaultModelName,
+	HardwareName:   defaultHardwareName,
+}
+
 var vllmLabels = map[string]string{
 	"container":        "main",
 	"dynamo_component": "backend",
@@ -80,10 +98,8 @@ var vllmLabels = map[string]string{
 	"engine":           "0",
 	"instance":         "10.244.236.95:9090",
 	"job":              "dynamo-system/dynamo-worker",
-	"model":            "/nfs/models/MiniMax/MiniMax-M2.5",
-	"model_name":       "minimax-m25-tp8ep",
 	"namespace":        "dynamo-system",
-	"pod":              "minimax-m25-tp8ep-gemmpath-0-vllmworker-mgjgs",
+	"pod":              "fake-llm-deployment-0",
 }
 
 type fakeDeployment struct {
@@ -94,7 +110,7 @@ type fakeDeployment struct {
 
 var deploymentTemplates = []fakeDeployment{
 	{
-		ModelName:  "minimax-m25-tp8ep",
+		ModelName:  defaultDeploymentName,
 		EngineType: "vllm",
 		BaseLabels: vllmLabels,
 	},
@@ -117,6 +133,9 @@ var deploymentTemplates = []fakeDeployment{
 
 func deploymentForIndex(index int) fakeDeployment {
 	template := deploymentTemplates[index%len(deploymentTemplates)]
+	if index == 0 {
+		template.ModelName = configuredDeploymentInfo.DeploymentName
+	}
 	deployment := fakeDeployment{
 		ModelName:  template.ModelName,
 		EngineType: template.EngineType,
@@ -136,11 +155,17 @@ func deploymentForIndex(index int) fakeDeployment {
 }
 
 func labelsForDeployment(deployment fakeDeployment) map[string]string {
-	out := make(map[string]string, len(deployment.BaseLabels)+2)
+	out := make(map[string]string, len(deployment.BaseLabels)+5)
 	for k, v := range deployment.BaseLabels {
 		out[k] = v
 	}
 	out["model_name"] = deployment.ModelName
+	if deployment.ModelName == configuredDeploymentInfo.DeploymentName {
+		out["model"] = configuredDeploymentInfo.ModelName
+		out["deployment_name"] = configuredDeploymentInfo.DeploymentName
+		out["hardware_name"] = configuredDeploymentInfo.HardwareName
+		out["hardwareName"] = configuredDeploymentInfo.HardwareName
+	}
 	out["engine_type"] = deployment.EngineType
 	return out
 }
@@ -158,14 +183,32 @@ func queryEngineType(query string) string {
 
 func deploymentIndexesForQuery(query string, deploymentCount int) []int {
 	engineType := queryEngineType(query)
+	modelName := queryModelNameMatcher(query)
 	indexes := make([]int, 0, deploymentCount)
 	for index := 0; index < deploymentCount; index++ {
 		deployment := deploymentForIndex(index)
 		if engineType == "" || deployment.EngineType == engineType {
+			if modelName != "" && deployment.ModelName != modelName {
+				continue
+			}
 			indexes = append(indexes, index)
 		}
 	}
 	return indexes
+}
+
+func queryModelNameMatcher(query string) string {
+	const marker = `model_name="`
+	start := strings.Index(query, marker)
+	if start < 0 {
+		return ""
+	}
+	start += len(marker)
+	end := strings.Index(query[start:], `"`)
+	if end < 0 {
+		return ""
+	}
+	return query[start : start+end]
 }
 
 func metricMeta(query, metricKey string, deploymentIndex int) (map[string]string, map[string]string) {
@@ -355,7 +398,7 @@ func (s *metricsStore) trimHistoryLocked() {
 }
 
 func (s *metricsStore) backfillRecentWindowLocked() {
-	start := alignToInterval(s.virtualNow - 5*60 + scrapeInterval.Seconds())
+	start := alignToInterval(s.virtualNow - 5*60)
 	for t := start; t <= s.virtualNow; t += scrapeInterval.Seconds() {
 		for _, key := range metricKeys {
 			v := s.generateValue(key, t)
@@ -523,6 +566,8 @@ func identifyMetric(query string) string {
 		return "throughput"
 	case strings.Contains(q, "token_usage"), strings.Contains(q, "kv_cache"):
 		return "gpu_utilization"
+	case strings.Contains(q, "gpu_info"):
+		return "_gpu_info"
 	case q == "up":
 		return "_up"
 	default:
@@ -551,6 +596,30 @@ func queryProducesSingleSeries(metricKey string) bool {
 	default:
 		return false
 	}
+}
+
+func deploymentInfoForIndex(index int) deploymentInfo {
+	deployment := deploymentForIndex(index)
+	info := configuredDeploymentInfo
+	info.DeploymentName = deployment.ModelName
+	if deployment.ModelName != configuredDeploymentInfo.DeploymentName {
+		info.ModelName = deployment.ModelName
+	}
+	return info
+}
+
+func gpuInfoMetric(index int) map[string]string {
+	info := deploymentInfoForIndex(index)
+	labels := labelsForDeployment(deploymentForIndex(index))
+	labels["__name__"] = "vllm:gpu_info"
+	labels["model_name"] = info.DeploymentName
+	labels["deployment_name"] = info.DeploymentName
+	labels["model"] = info.ModelName
+	labels["hardware_name"] = info.HardwareName
+	labels["hardwareName"] = info.HardwareName
+	labels["gpu_type"] = info.HardwareName
+	labels["gpuType"] = info.HardwareName
+	return labels
 }
 
 func metricIdentity(query, metricKey string, deploymentIndex int) map[string]string {
@@ -649,6 +718,7 @@ func (s *fakePromServer) handleStatus(w http.ResponseWriter, _ *http.Request) {
 		"history_seconds":         historyWindow.Seconds(),
 		"max_points_per_metric":   maxHistory,
 		"metrics":                 []string{"ttft", "tpot", "qps", "throughput", "gpu_utilization", "error_rate"},
+		"deployment_info":         configuredDeploymentInfo,
 	}
 	s.store.mu.Lock()
 	info["remediated"] = s.store.remediated
@@ -681,6 +751,14 @@ func normalizeAction(action string) (string, bool) {
 	default:
 		return action, false
 	}
+}
+
+func envOrDefault(name string, fallback string) string {
+	value := strings.TrimSpace(os.Getenv(name))
+	if value == "" {
+		return fallback
+	}
+	return value
 }
 
 func (s *fakePromServer) handleFakeAction(w http.ResponseWriter, r *http.Request) {
@@ -769,6 +847,24 @@ func (s *fakePromServer) handleInstantQuery(w http.ResponseWriter, r *http.Reque
 					"metric": map[string]string{"__name__": "up", "job": "sglang"},
 					"value":  []any{float64(time.Now().Unix()), "1"},
 				}},
+			},
+		})
+		return
+	}
+	if metricKey == "_gpu_info" {
+		deploymentIndexes := deploymentIndexesForQuery(query, s.deploymentCount)
+		result := make([]map[string]any, 0, len(deploymentIndexes))
+		for _, i := range deploymentIndexes {
+			result = append(result, map[string]any{
+				"metric": gpuInfoMetric(i),
+				"value":  []any{float64(time.Now().Unix()), "1"},
+			})
+		}
+		s.sendJSON(w, http.StatusOK, promResponse{
+			Status: "success",
+			Data: map[string]any{
+				"resultType": "vector",
+				"result":     result,
 			},
 		})
 		return
@@ -923,6 +1019,12 @@ func main() {
 	cycleMinutes := flag.Int("cycle-minutes", 5, "Deprecated; retained for CLI compatibility")
 	flag.Parse()
 
+	configuredDeploymentInfo = deploymentInfo{
+		DeploymentName: envOrDefault("FAKE_DEPLOYMENT_NAME", defaultDeploymentName),
+		ModelName:      envOrDefault("FAKE_MODEL_NAME", defaultModelName),
+		HardwareName:   envOrDefault("FAKE_HARDWARE_NAME", defaultHardwareName),
+	}
+
 	deploymentCount := 2
 	if raw := strings.TrimSpace(os.Getenv("FAKE_DEPLOYMENT_COUNT")); raw != "" {
 		if parsed, err := strconv.Atoi(raw); err == nil && parsed > 0 {
@@ -979,6 +1081,7 @@ func main() {
 	fmt.Printf("Normal randomness spread: +/-%.2f around the normal baseline (set FAKE_NORMAL_RANDOMNESS)\n", normalSpread)
 	fmt.Printf("Anomaly randomness spread: +/-%.2f around the anomaly baseline (set FAKE_ANOMALY_RANDOMNESS)\n", anomalySpread)
 	fmt.Printf("Force anomaly every query: %t (deprecated; mode APIs now control anomaly state)\n", forceQueryShock)
+	fmt.Printf("Deployment: %s | model: %s | hardware: %s\n", configuredDeploymentInfo.DeploymentName, configuredDeploymentInfo.ModelName, configuredDeploymentInfo.HardwareName)
 	fmt.Printf("Status: http://localhost:%d/_fake/status\n\n", *port)
 	fmt.Printf("Deployment series per metric: %d (set FAKE_DEPLOYMENT_COUNT to change)\n\n", deploymentCount)
 

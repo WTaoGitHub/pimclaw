@@ -25,8 +25,19 @@ type fakeStatusResponse struct {
 	ForceAnomaly        bool           `json:"force_anomaly"`
 	Remediated          bool           `json:"remediated"`
 	AnomalyMetrics      []string       `json:"anomaly_metrics"`
+	DeploymentInfo      deploymentInfo `json:"deployment_info"`
 	MaxPointsPerMetric  int            `json:"max_points_per_metric"`
 	DataPointsPerMetric map[string]int `json:"data_points_per_metric"`
+}
+
+type instantQueryResponse struct {
+	Status string `json:"status"`
+	Data   struct {
+		Result []struct {
+			Metric map[string]string `json:"metric"`
+			Value  [2]any            `json:"value"`
+		} `json:"result"`
+	} `json:"data"`
 }
 
 var metricQueries = map[string]string{
@@ -188,6 +199,15 @@ func TestStartsNormalWithOneDayHistory(t *testing.T) {
 	if status.Phase != "NORMAL" {
 		t.Fatalf("expected initial NORMAL phase, got %s", status.Phase)
 	}
+	if status.DeploymentInfo.DeploymentName != defaultDeploymentName {
+		t.Fatalf("expected default deployment name %q, got %q", defaultDeploymentName, status.DeploymentInfo.DeploymentName)
+	}
+	if status.DeploymentInfo.ModelName != defaultModelName {
+		t.Fatalf("expected default model name %q, got %q", defaultModelName, status.DeploymentInfo.ModelName)
+	}
+	if status.DeploymentInfo.HardwareName != defaultHardwareName {
+		t.Fatalf("expected default hardware name %q, got %q", defaultHardwareName, status.DeploymentInfo.HardwareName)
+	}
 	if status.MaxPointsPerMetric != 5760 {
 		t.Fatalf("expected 5760 max points per metric, got %d", status.MaxPointsPerMetric)
 	}
@@ -198,6 +218,65 @@ func TestStartsNormalWithOneDayHistory(t *testing.T) {
 	}
 	if avg := averageTTFT(t, ts.URL); avg > 0.20 {
 		t.Fatalf("expected initial normal TTFT average <= 0.20s, got %.3fs", avg)
+	}
+}
+
+func TestDeploymentInfoLabelsAndGpuInfo(t *testing.T) {
+	original := configuredDeploymentInfo
+	configuredDeploymentInfo = deploymentInfo{
+		DeploymentName: "deploy-a",
+		ModelName:      "model-a",
+		HardwareName:   "NVIDIA H800_SXM",
+	}
+	defer func() {
+		configuredDeploymentInfo = original
+	}()
+
+	store := newMetricsStore(5, 0, 0, false)
+	server := &fakePromServer{store: store, deploymentCount: 1}
+	ts := httptest.NewServer(server.handler())
+	defer ts.Close()
+
+	status := getStatus(t, ts.URL)
+	if status.DeploymentInfo.DeploymentName != "deploy-a" || status.DeploymentInfo.ModelName != "model-a" || status.DeploymentInfo.HardwareName != "NVIDIA H800_SXM" {
+		t.Fatalf("unexpected deployment_info: %+v", status.DeploymentInfo)
+	}
+
+	resp, err := http.Get(ts.URL + "/api/v1/query?query=" + url.QueryEscape("vllm:gpu_info"))
+	if err != nil {
+		t.Fatalf("gpu_info query failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	var parsed instantQueryResponse
+	if err := json.NewDecoder(resp.Body).Decode(&parsed); err != nil {
+		t.Fatalf("decode gpu_info response: %v", err)
+	}
+	if len(parsed.Data.Result) != 1 {
+		t.Fatalf("expected one gpu_info series, got %d", len(parsed.Data.Result))
+	}
+	labels := parsed.Data.Result[0].Metric
+	if labels["model_name"] != "deploy-a" {
+		t.Fatalf("expected gpu_info model_name deploy-a, got %q", labels["model_name"])
+	}
+	if labels["model"] != "model-a" {
+		t.Fatalf("expected gpu_info model model-a, got %q", labels["model"])
+	}
+	if labels["hardware_name"] != "NVIDIA H800_SXM" {
+		t.Fatalf("expected gpu_info hardware_name NVIDIA H800_SXM, got %q", labels["hardware_name"])
+	}
+
+	resp, err = http.Get(ts.URL + "/api/v1/query?query=" + url.QueryEscape(`vllm:gpu_info{model_name="missing"}`))
+	if err != nil {
+		t.Fatalf("filtered gpu_info query failed: %v", err)
+	}
+	defer resp.Body.Close()
+	parsed = instantQueryResponse{}
+	if err := json.NewDecoder(resp.Body).Decode(&parsed); err != nil {
+		t.Fatalf("decode filtered gpu_info response: %v", err)
+	}
+	if len(parsed.Data.Result) != 0 {
+		t.Fatalf("expected no gpu_info series for missing model_name, got %d", len(parsed.Data.Result))
 	}
 }
 

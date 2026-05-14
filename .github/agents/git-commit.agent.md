@@ -23,7 +23,7 @@ Use GPT-5 mini by default.
 ## Approach
 1. Run `git status --short` to see the working tree state.
 2. Inspect the current change set with `git diff --stat`, `git diff`, and `git diff --cached` as needed, prioritizing unstaged changes when they exist.
-3. Summarize the changes in 1 to 3 short sentences.
+3. Summarize the changes in 1 to 3 short sentences. Plus the statements about the details of the change, also include a high-level summary of the overall change and its intent if possible.
 4. Produce a concise commit message. Use a conventional-style subject unless the user asked for a different style.
 5. If the user asked to commit the current repo changes and there are unstaged changes, stage them with `git add -A` unless the user asked for narrower scope.
 6. Create the commit with `git commit -m "<message>"`.

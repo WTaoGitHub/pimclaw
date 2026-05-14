@@ -25,13 +25,15 @@ In PimClaw Head context, interpret them as: query configured fake/runtime Promet
 4. If running from a developer machine, pass `--via-pod` so the query executes from inside the running PimClaw pod, or pass `--base-url` for direct local access.
 5. Use `--engine vllm` or `--engine sglang`; default is `vllm`.
 6. Use `--deployment` when the user wants one deployment. Omit it for aggregated metrics or fake Prometheus defaults.
-7. Return the generated PNG with Markdown image syntax if available. If PNG conversion is not available, return the SVG path.
+7. The script also fetches `gpu_info` when supported by the configured Prometheus source and prints it as `gpu_info` JSON. Use this to report deployment name, model name, and `hardware_name`.
+8. The default query range is 10 minutes with 15-second samples, so each metric line has 40 points.
+9. Return the generated PNG with Markdown image syntax if available. If PNG conversion is not available, return the SVG path.
 
 Example:
 
 ```bash
 python3 SKILL/pimclaw-runtime-metrics-chart/scripts/pimclaw_metrics_chart.py \
-  --range-minutes 5 \
+  --range-minutes 10 \
   --out fake-promethues-server/runtime-metrics-chart.svg
 ```
 
@@ -43,7 +45,7 @@ python3 SKILL/pimclaw-runtime-metrics-chart/scripts/pimclaw_metrics_chart.py \
   --namespace baota-playground \
   --pod pimclaw-75896475f6-j8qpz \
   --config cicd/openclaw.json \
-  --range-minutes 5 \
+  --range-minutes 10 \
   --out fake-promethues-server/runtime-metrics-chart.svg
 ```
 
@@ -63,12 +65,17 @@ Then show:
   2. `plugins.entries.pimclaw.config.prometheus.baseUrl`
 - When fake Prometheus is configured, treat it as authoritative and do not query the real Prometheus URL.
 - Output: `fake-promethues-server/runtime-metrics-chart.svg`
+- Default range: 10 minutes
+- Sample step: 15 seconds
+- Points per metric: 40
 - Metrics: `ttft`, `tpot`, `qps`, `throughput`, `gpu_utilization`, `error_rate`
+- Metadata: `gpu_info` with `deploymentName`, `modelName`, and `hardware_name` when available
 
 ## PromQL
 
 The script uses the same metric names and PromQL shape as `src/master/prometheus-client.ts`.
 For fake Prometheus, the same PromQL is acceptable because the fake server identifies the metric family from the query string.
+For vLLM metadata, the script also queries `vllm:gpu_info`.
 
 ## Rendering
 
@@ -82,4 +89,4 @@ If `qlmanage` is unavailable or fails, the script renders a simple PNG line char
 
 ## Interpretation
 
-When summarizing, mention the latest values and whether the window looks normal or anomalous. For fake Prometheus, typical normal vLLM TTFT is around `0.12-0.15s`; forced anomaly TTFT is usually much higher, commonly around `0.45s+`.
+When summarizing, mention the latest values, whether the window looks normal or anomalous, and the `gpu_info` deployment/model/hardware metadata when present. For fake Prometheus, typical normal vLLM TTFT is around `0.12-0.15s`; anomaly TTFT may be much higher when `ttft` is one of the selected anomaly metrics.

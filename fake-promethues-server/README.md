@@ -53,6 +53,35 @@ Metric targets:
 | GPU Util | `80%-95%` | `< 70%` | `100% locked or 0%` |
 | Error Rate | `< 0.01%` | `> 10%` | `> 25%` |
 
+## LLM Deployment Metadata
+
+The fake server supplies deployment metadata in metric labels, `/_fake/status`,
+and `vllm:gpu_info` query responses so PimClaw can attach runtime hardware
+metadata to anomaly events.
+
+Defaults:
+
+| Field | Default |
+|-------|---------|
+| deployment name | `Qwen/Qwen3-32B` |
+| model name | `Qwen/Qwen3-32B` |
+| hardware_name | `NVIDIA H800_SXM` |
+
+Configure with environment variables:
+
+```bash
+FAKE_DEPLOYMENT_NAME="my-deployment"
+FAKE_MODEL_NAME="Qwen/Qwen3-32B"
+FAKE_HARDWARE_NAME="NVIDIA H800_SXM"
+```
+
+Example GPU metadata query:
+
+```bash
+curl -sG http://127.0.0.1:9090/api/v1/query \
+  --data-urlencode 'query=vllm:gpu_info'
+```
+
 ## Fake Remediation Control
 
 The fake server can simulate a deployment action fixing the issue. Call the action
@@ -84,6 +113,9 @@ go run . --port 9090
 
 Environment variable supported for cloud platforms:
 - `PORT` (default: `9090`)
+- `FAKE_DEPLOYMENT_NAME` (default: `Qwen/Qwen3-32B`) sets the Prometheus `model_name` / PimClaw deployment identifier
+- `FAKE_MODEL_NAME` (default: `Qwen/Qwen3-32B`) sets the model label exposed by the fake server
+- `FAKE_HARDWARE_NAME` (default: `NVIDIA H800_SXM`) sets the hardware metadata exposed by `vllm:gpu_info`
 - `FAKE_NORMAL_RANDOMNESS` (default: `0.04`) controls how far normal windows vary around their normal baseline; `0` disables extra normal-window spread
 - `FAKE_ANOMALY_RANDOMNESS` (default: `0.35`) controls how far anomaly cycles vary around their anomaly baseline; `0` disables extra anomaly spread
 - `FAKE_FORCE_ANOMALY_EVERY_QUERY` is deprecated; use `POST /_fake/mode`

@@ -47,6 +47,10 @@ PROMQL: dict[str, dict[str, str]] = {
     },
 }
 
+GPU_INFO_PROMQL: dict[str, str] = {
+    "vllm": "vllm:gpu_info",
+}
+
 
 @dataclass(frozen=True)
 class MetricSpec:
@@ -54,16 +58,18 @@ class MetricSpec:
     label: str
     color: str
     unit: str
+    y_max: float
+    y_interval: float
     ratio_to_percent: bool = False
 
 
 METRICS = [
-    MetricSpec("ttft", "TTFT", "#d44a3a", "s"),
-    MetricSpec("tpot", "TPOT", "#7a4cc2", "s/token"),
-    MetricSpec("qps", "QPS", "#1872b8", "req/s"),
-    MetricSpec("throughput", "Throughput", "#188f6a", "tokens/s"),
-    MetricSpec("gpu_utilization", "GPU Utilization", "#b57900", "%", True),
-    MetricSpec("error_rate", "Error Rate", "#5f6b7a", "%", True),
+    MetricSpec("ttft", "TTFT", "#d44a3a", "s", 50, 1),
+    MetricSpec("tpot", "TPOT", "#7a4cc2", "s/token", 2.5, 0.05),
+    MetricSpec("qps", "QPS", "#1872b8", "req/s", 50, 1),
+    MetricSpec("throughput", "Throughput", "#188f6a", "tokens/s", 40, 0.8),
+    MetricSpec("gpu_utilization", "GPU Utilization", "#b57900", "%", 100, 2, True),
+    MetricSpec("error_rate", "Error Rate", "#5f6b7a", "%", 100, 2, True),
 ]
 
 
@@ -138,6 +144,7 @@ def with_deployment(promql: str, deployment: str | None) -> str:
         "vllm:request_success_total",
         "vllm:generation_tokens_total",
         "vllm:kv_cache_usage_perc",
+        "vllm:gpu_info",
         "sglang:time_to_first_token_seconds_bucket",
         "sglang:inter_token_latency_seconds_bucket",
         "sglang:num_requests_total",
@@ -157,6 +164,12 @@ def with_deployment(promql: str, deployment: str | None) -> str:
 def query_local(base_url: str, promql: str, start: int, end: int, step: int, timeout: int) -> dict[str, Any]:
     query = urllib.parse.urlencode({"query": promql, "start": start, "end": end, "step": step})
     with urllib.request.urlopen(f"{base_url.rstrip('/')}/api/v1/query_range?{query}", timeout=timeout) as resp:
+        return json.loads(resp.read().decode("utf-8"))
+
+
+def query_instant_local(base_url: str, promql: str, timeout: int) -> dict[str, Any]:
+    query = urllib.parse.urlencode({"query": promql})
+    with urllib.request.urlopen(f"{base_url.rstrip('/')}/api/v1/query?{query}", timeout=timeout) as resp:
         return json.loads(resp.read().decode("utf-8"))
 
 
@@ -189,6 +202,29 @@ def query_via_pod(pod: str, namespace: str, base_url: str, promql: str, start: i
     return json.loads(raw)
 
 
+def query_instant_via_pod(pod: str, namespace: str, base_url: str, promql: str) -> dict[str, Any]:
+    raw = run(
+        [
+            "kubectl",
+            "exec",
+            "-n",
+            namespace,
+            pod,
+            "--",
+            "curl",
+            "-sS",
+            "--get",
+            "--data-urlencode",
+            f"query={promql}",
+            f"{base_url.rstrip('/')}/api/v1/query",
+        ]
+    )
+    start_idx = raw.find("{")
+    if start_idx > 0:
+        raw = raw[start_idx:]
+    return json.loads(raw)
+
+
 def extract_series(payload: dict[str, Any], spec: MetricSpec) -> list[tuple[float, float]]:
     results = payload.get("data", {}).get("result", [])
     if not results:
@@ -208,6 +244,41 @@ def extract_series(payload: dict[str, Any], spec: MetricSpec) -> list[tuple[floa
     return out
 
 
+def extract_gpu_info(payload: dict[str, Any]) -> list[dict[str, str]]:
+    out = []
+    for item in payload.get("data", {}).get("result", []):
+        labels = item.get("metric", {})
+        if not isinstance(labels, dict):
+            continue
+        model_name = str(labels.get("model_name") or labels.get("deployment_name") or labels.get("model") or "")
+        model = str(labels.get("model") or labels.get("modelName") or model_name)
+        hardware = str(labels.get("hardware_name") or labels.get("hardwareName") or labels.get("gpu_type") or labels.get("gpuType") or labels.get("modelName") or "")
+        if not any((model_name, model, hardware)):
+            continue
+        out.append(
+            {
+                "deploymentName": model_name,
+                "modelName": model,
+                "hardware_name": hardware,
+            }
+        )
+    return out
+
+
+def metadata_summary(gpu_info: list[dict[str, str]]) -> str:
+    if not gpu_info:
+        return ""
+    first = gpu_info[0]
+    parts = []
+    if first.get("deploymentName"):
+        parts.append(f"deployment {first['deploymentName']}")
+    if first.get("modelName") and first.get("modelName") != first.get("deploymentName"):
+        parts.append(f"model {first['modelName']}")
+    if first.get("hardware_name"):
+        parts.append(f"hardware {first['hardware_name']}")
+    return " | ".join(parts)
+
+
 def fmt_value(value: float, spec: MetricSpec) -> str:
     if spec.unit == "%":
         return f"{value:.1f}%"
@@ -222,16 +293,20 @@ def esc(text: Any) -> str:
     return str(text).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 
-def axis_bounds(values: list[float]) -> tuple[float, float]:
-    """Use a tight per-metric axis so runtime drift is visible at a glance."""
-    lo, hi = min(values), max(values)
-    span = hi - lo
-    center = (hi + lo) / 2
-    if span == 0:
-        pad = max(abs(center) * 0.03, 0.001)
-    else:
-        pad = span * 0.06
-    return max(0, lo - pad), hi + pad
+def axis_bounds(spec: MetricSpec) -> tuple[float, float]:
+    return 0, spec.y_max
+
+
+def axis_ticks(spec: MetricSpec) -> list[float]:
+    ticks = []
+    count = int(round(spec.y_max / spec.y_interval))
+    for i in range(count + 1):
+        ticks.append(round(i * spec.y_interval, 10))
+    return ticks
+
+
+def clamp_axis(value: float, lo: float, hi: float) -> float:
+    return min(max(value, lo), hi)
 
 
 def render_svg(series: dict[str, list[tuple[float, float]]], out: Path, title: str, subtitle: str) -> None:
@@ -262,23 +337,25 @@ def render_svg(series: dict[str, list[tuple[float, float]]], out: Path, title: s
         vals = [v for _, v in points]
         col, row = idx % 2, idx // 2
         x, y = ml + col * (col_w + 36), mt + row * (row_h + 18)
-        lo, hi = axis_bounds(vals)
+        lo, hi = axis_bounds(spec)
         gx, gy, gw, gh = x + 54, y + 40, col_w - 76, row_h - 62
-        poly = " ".join(f"{sx(ts, gx, gw):.1f},{sy(v, lo, hi, gy, gh):.1f}" for ts, v in points)
+        poly = " ".join(f"{sx(ts, gx, gw):.1f},{sy(clamp_axis(v, lo, hi), lo, hi, gy, gh):.1f}" for ts, v in points)
 
         parts.append(f'<g><rect x="{x}" y="{y}" width="{col_w}" height="{row_h}" fill="#fff" stroke="#d7dde3" rx="6"/>')
         parts.append(f'<text x="{x + 14}" y="{y + 24}" font-family="Arial,sans-serif" font-size="14" font-weight="700" fill="#24313f">{esc(spec.label)} ({esc(spec.unit)})</text>')
         parts.append(f'<text x="{x + col_w - 14}" y="{y + 24}" text-anchor="end" font-family="Arial,sans-serif" font-size="12" fill="#64707d">latest {esc(fmt_value(vals[-1], spec))}</text>')
-        for k in range(4):
-            yy = gy + gh * k / 3
-            parts.append(f'<line x1="{gx}" y1="{yy}" x2="{gx + gw}" y2="{yy}" stroke="#eef1f4"/>')
+        ticks = axis_ticks(spec)
+        for tick in ticks:
+            yy = sy(tick, lo, hi, gy, gh)
+            stroke = "#e6ebef" if tick in {lo, hi} else "#f1f3f5"
+            parts.append(f'<line x1="{gx}" y1="{yy:.1f}" x2="{gx + gw}" y2="{yy:.1f}" stroke="{stroke}" stroke-width="0.7"/>')
         parts.append(f'<line x1="{gx}" y1="{gy + gh}" x2="{gx + gw}" y2="{gy + gh}" stroke="#cfd6dd"/>')
         parts.append(f'<line x1="{gx}" y1="{gy}" x2="{gx}" y2="{gy + gh}" stroke="#cfd6dd"/>')
         parts.append(f'<text x="{gx - 8}" y="{gy + 4}" text-anchor="end" font-family="Arial,sans-serif" font-size="10" fill="#6b7682">{esc(fmt_value(hi, spec))}</text>')
         parts.append(f'<text x="{gx - 8}" y="{gy + gh}" text-anchor="end" font-family="Arial,sans-serif" font-size="10" fill="#6b7682">{esc(fmt_value(lo, spec))}</text>')
         parts.append(f'<polyline fill="none" stroke="{spec.color}" stroke-width="2.5" points="{poly}"/>')
         for ts, v in points:
-            parts.append(f'<circle cx="{sx(ts, gx, gw):.1f}" cy="{sy(v, lo, hi, gy, gh):.1f}" r="2.8" fill="{spec.color}"/>')
+            parts.append(f'<circle cx="{sx(ts, gx, gw):.1f}" cy="{sy(clamp_axis(v, lo, hi), lo, hi, gy, gh):.1f}" r="2.8" fill="{spec.color}"/>')
         parts.append("</g>")
 
     parts.append("</svg>")
@@ -434,13 +511,15 @@ def render_png_native(series: dict[str, list[tuple[float, float]]], png: Path, t
         color = rgb(spec.color)
         text(x + 14, y + 16, f"{spec.label} {fmt_value(vals[-1], spec)}", (36, 49, 63), 2)
         gx, gy, gw, gh = x + 54, y + 44, col_w - 76, row_h - 66
-        for k in range(4):
-            yy = int(gy + gh * k / 3)
-            line(gx, yy, gx + gw, yy, (238, 241, 244), 1)
+        lo, hi = axis_bounds(spec)
+        for tick in axis_ticks(spec):
+            yy = sy(tick, lo, hi, gy, gh)
+            line(gx, yy, gx + gw, yy, (241, 243, 245), 1)
         line(gx, gy + gh, gx + gw, gy + gh, (207, 214, 221), 1)
         line(gx, gy, gx, gy + gh, (207, 214, 221), 1)
-        lo, hi = axis_bounds(vals)
-        xy = [(sx(ts, gx, gw), sy(v, lo, hi, gy, gh)) for ts, v in points]
+        text(gx - 48, gy - 2, fmt_value(hi, spec), (107, 118, 130), 1)
+        text(gx - 48, gy + gh - 4, fmt_value(lo, spec), (107, 118, 130), 1)
+        xy = [(sx(ts, gx, gw), sy(clamp_axis(v, lo, hi), lo, hi, gy, gh)) for ts, v in points]
         for (x0, y0), (x1, y1) in zip(xy, xy[1:]):
             line(x0, y0, x1, y1, color, 3)
         for px, py in xy:
@@ -471,14 +550,14 @@ def main() -> int:
     parser.add_argument("--via-pod", action="store_true")
     parser.add_argument("--engine", choices=sorted(PROMQL), help="Inference engine. Defaults to prometheus.engine from config, then vllm.")
     parser.add_argument("--deployment")
-    parser.add_argument("--range-minutes", type=int, default=5)
-    parser.add_argument("--step", type=int, default=30)
+    parser.add_argument("--range-minutes", type=int, default=10)
+    parser.add_argument("--step", type=int, default=15)
     parser.add_argument("--timeout", type=int, default=10)
     parser.add_argument("--out", default=DEFAULT_OUT)
     args = parser.parse_args()
 
     end = int(time.time())
-    start = end - args.range_minutes * 60
+    start = end - args.range_minutes * 60 + args.step
     base_url = resolve_base_url(args.config, args.base_url)
     engine = resolve_engine(args.config, args.engine)
     pod = args.pod
@@ -495,6 +574,19 @@ def main() -> int:
         )
         collected[spec.key] = extract_series(payload, spec)
 
+    gpu_info: list[dict[str, str]] = []
+    gpu_promql = GPU_INFO_PROMQL.get(engine)
+    if gpu_promql:
+        try:
+            gpu_payload = (
+                query_instant_via_pod(pod, args.namespace, base_url, with_deployment(gpu_promql, args.deployment))
+                if args.via_pod
+                else query_instant_local(base_url, with_deployment(gpu_promql, args.deployment), args.timeout)
+            )
+            gpu_info = extract_gpu_info(gpu_payload)
+        except Exception as exc:
+            gpu_info = [{"deploymentName": "", "modelName": "", "hardware_name": f"gpu_info unavailable: {exc}"}]
+
     if not any(collected.values()):
         raise RuntimeError("Prometheus returned no usable samples")
 
@@ -504,6 +596,9 @@ def main() -> int:
         subtitle += f" from pod {pod}"
     if args.deployment:
         subtitle += f" | deployment {args.deployment}"
+    gpu_summary = metadata_summary(gpu_info)
+    if gpu_summary:
+        subtitle += f" | {gpu_summary}"
     subtitle += f" | {engine} | {base_url}"
     render_svg(collected, out, "PimClaw Runtime Metrics", subtitle)
     png = render_png_with_qlmanage(out)
@@ -515,7 +610,7 @@ def main() -> int:
         points = collected.get(spec.key) or []
         if points:
             latest[spec.key] = fmt_value(points[-1][1], spec)
-    print(json.dumps({"svg": str(out), "png": str(png) if png else None, "latest": latest}, indent=2))
+    print(json.dumps({"svg": str(out), "png": str(png) if png else None, "latest": latest, "gpu_info": gpu_info}, indent=2))
     return 0
 
 

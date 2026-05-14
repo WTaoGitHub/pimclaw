@@ -314,7 +314,15 @@ The `openclaw.plugin.json` file declares the plugin identity, config schema, and
           "agentId": { "type": "string", "default": "pimclaw-planner" },
           "timeoutSeconds": { "type": "number", "default": 600 },
           "fallbackTaskType": { "type": "string", "default": "scale-up" },
-          "fallbackConfig": { "type": "object" }
+          "fallbackConfig": { "type": "object" },
+          "delivery": {
+            "type": "object",
+            "properties": {
+              "enabled": { "type": "boolean", "default": false },
+              "channel": { "type": "string", "default": "feishu" },
+              "target": { "type": "string" }
+            }
+          }
         }
       }
     }
@@ -369,6 +377,9 @@ PimClaw's plugin-level config controls the AnomalyReceiver and Planner integrati
 | `planner.timeoutSeconds` | 600 | Planner agent run timeout |
 | `planner.fallbackTaskType` | `scale-up` | Task type used when Planner fails/times out |
 | `planner.fallbackConfig` | `{ "replicaDelta": 1 }` | Config applied when Planner fails/times out |
+| `planner.delivery.enabled` | `false` | Deliver Planner key-point summaries to an operator channel |
+| `planner.delivery.channel` | `feishu` | Delivery channel for Planner key-point summaries |
+| `planner.delivery.target` | unset | OpenClaw reply target, for example `channel:oc_xxx` |
 
 ### LLM Agent Configuration
 

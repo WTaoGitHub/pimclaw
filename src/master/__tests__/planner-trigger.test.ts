@@ -253,4 +253,54 @@ describe('PlannerTrigger completion semantics', () => {
 
     await fs.rm(tmpDir, { recursive: true, force: true });
   });
+
+  it('passes planner delivery config and asks for Feishu key points when enabled', async () => {
+    const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'pimclaw-planner-trigger-'));
+    const recorder = new TaskStatusRecorder(tmpDir);
+    await recorder.initialize();
+
+    const taskId = uuidv4();
+    await recorder.createTask(createPlanningTask(taskId));
+
+    let capturedTask = '';
+    let capturedDelivery: unknown;
+    const trigger = new PlannerTrigger({
+      triggerAgent: async (_agentId, options) => {
+        capturedTask = options.task;
+        capturedDelivery = options.delivery;
+        await recorder.updateTaskStatus(taskId, 'ready');
+      },
+    }, recorder, {
+      timeoutSeconds: 1,
+      delivery: {
+        enabled: true,
+        channel: 'feishu',
+        target: 'channel:oc_f305d0c3cf623806cd3f15a6a03dd636',
+      },
+    });
+
+    await trigger.trigger([
+      {
+        type: 'spike',
+        metricName: 'ttft',
+        currentValue: 70,
+        previousValue: 0.5,
+        severity: 'high',
+        deploymentName: 'glm-5.1-fp8',
+        taskId,
+        eventId: uuidv4(),
+        receivedAt: new Date(),
+      },
+    ], taskId);
+
+    expect(capturedDelivery).toEqual({
+      enabled: true,
+      channel: 'feishu',
+      target: 'channel:oc_f305d0c3cf623806cd3f15a6a03dd636',
+    });
+    expect(capturedTask).toContain('Planner Key Points');
+    expect(capturedTask).toContain('Do NOT reveal private chain-of-thought');
+
+    await fs.rm(tmpDir, { recursive: true, force: true });
+  });
 });
