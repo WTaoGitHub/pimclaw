@@ -67,7 +67,7 @@ METRICS = [
     MetricSpec("ttft", "TTFT", "#d44a3a", "s", 50, 1),
     MetricSpec("tpot", "TPOT", "#7a4cc2", "s/token", 2.5, 0.05),
     MetricSpec("qps", "QPS", "#1872b8", "req/s", 50, 1),
-    MetricSpec("throughput", "Throughput", "#188f6a", "tokens/s", 40, 0.8),
+    MetricSpec("throughput", "Throughput", "#188f6a", "tokens/s", 80, 1.6),
     MetricSpec("gpu_utilization", "GPU Utilization", "#b57900", "%", 100, 2, True),
     MetricSpec("error_rate", "Error Rate", "#5f6b7a", "%", 100, 2, True),
 ]
