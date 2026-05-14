@@ -72,10 +72,15 @@
             "pimclaw_submit_anomalies",
             "pimclaw_query_metrics",
             "pimclaw_submit_task_feedback",
-            "pimclaw_list_tasks"
+            "pimclaw_list_tasks",
+            "write",
+            "read",
+            "exec"
           ]
         },
-        "skills": [],
+        "skills": [
+          "pimclaw-runtime-metrics-chart"
+        ],
         "thinkingDefault": "off"
       },
       {
@@ -98,7 +103,8 @@
             "pimclaw_sim_benchmark",
             "pimclaw_sim_dataset_info",
             "web_search",
-            "write"
+            "write",
+            "read"
           ]
         },
         "skills": [],

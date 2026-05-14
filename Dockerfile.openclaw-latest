@@ -24,6 +24,7 @@ USER root
 RUN mkdir -p /app/plugins/pimclaw \
     /app/data/pimclaw/docs/perfMCP \
     /app/seed-openclaw-home/cron \
+    /app/seed-openclaw-home/skills \
     /app/seed-openclaw-home/workspaces/pimclaw-main \
     /app/seed-openclaw-home/workspaces/pimclaw-head \
     /app/seed-openclaw-home/workspaces/pimclaw-planner
@@ -36,6 +37,7 @@ COPY --from=pimclaw-builder /build/pimclaw/dist /app/plugins/pimclaw/dist
 COPY --from=pimclaw-builder /build/pimclaw/node_modules /app/plugins/pimclaw/node_modules
 COPY --from=pimclaw-builder /build/pimclaw/agents/pimclaw-main/AGENTS.md /app/seed-openclaw-home/workspaces/pimclaw-main/AGENTS.md
 COPY --from=pimclaw-builder /build/pimclaw/agents/pimclaw-head/AGENTS.md /app/seed-openclaw-home/workspaces/pimclaw-head/AGENTS.md
+COPY --from=pimclaw-builder /build/pimclaw/agents/pimclaw-head/pimclaw-runtime-metrics-chart /app/seed-openclaw-home/skills/pimclaw-runtime-metrics-chart
 COPY --from=pimclaw-builder /build/pimclaw/agents/pimclaw-planner/AGENTS.md /app/seed-openclaw-home/workspaces/pimclaw-planner/AGENTS.md
 COPY --from=pimclaw-builder /build/pimclaw/docs/perfMCP/perfllm_mcp_server.py /app/data/pimclaw/docs/perfMCP/perfllm_mcp_server.py
 
