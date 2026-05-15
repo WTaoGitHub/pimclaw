@@ -24,6 +24,7 @@ export { BaseAgent } from './master/base-agent.js';
 export type { LifecyclePhase } from './master/base-agent.js';
 export { SchedulerAgent } from './master/scheduler-agent.js';
 export { WorkerAgent } from './master/worker-agent.js';
+export { PlannerMemoryStore, buildPlannerMemoryEpisodeFromTask } from './master/planner-memory-store.js';
 
 // ── Integration boundary ──────────────────────────────────────────────────
 export { AnomalyReceiver } from './master/anomaly-receiver.js';
@@ -41,5 +42,6 @@ export type { PimClawConfig } from './config-manager.js';
 // ── Types ─────────────────────────────────────────────────────────────────
 export * from './types/index.js';
 export * from './types/agents.js';
+export * from './types/planner-memory.js';
 export * from './types/tasks.js';
 export * from './types/models.js';

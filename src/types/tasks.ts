@@ -12,6 +12,66 @@ export type TaskStatus =
   | 'failed'
   | 'expired';
 
+export type PlannerMetricName =
+  | 'ttft'
+  | 'tpot'
+  | 'qps'
+  | 'throughput'
+  | 'gpu_utilization'
+  | 'error_rate';
+
+export type TaskFeedbackVersion = 1;
+
+export type TaskFeedbackOutcome =
+  | 'helped'
+  | 'no-effect'
+  | 'worsened'
+  | 'failed-operationally'
+  | 'unknown';
+
+export type TaskFeedbackSource =
+  | 'system'
+  | 'operator'
+  | 'reviewer'
+  | 'head-followup';
+
+export type TaskFeedbackStatusSummary =
+  | 'pending-review'
+  | 'completed-successfully'
+  | 'completed-with-errors'
+  | 'execution-failed'
+  | 'timed-out'
+  | 'expired'
+  | 'unknown';
+
+export interface TaskFeedbackMetricAssessment {
+  metricName: PlannerMetricName;
+  direction: 'improved' | 'regressed' | 'unchanged' | 'unknown';
+  previousValue?: number;
+  currentValue?: number;
+  delta?: number;
+  percentChange?: number;
+  note?: string;
+}
+
+export interface TaskFeedbackDetails {
+  errorSignals?: string[];
+  resultSignals?: string[];
+  metricAssessments?: TaskFeedbackMetricAssessment[];
+  recommendedCaution?: string;
+  reviewerNotes?: string;
+}
+
+export interface TaskFeedback {
+  version: TaskFeedbackVersion;
+  statusSummary: TaskFeedbackStatusSummary;
+  outcome: TaskFeedbackOutcome;
+  source: TaskFeedbackSource;
+  generatedAt: Date;
+  summary: string;
+  details?: TaskFeedbackDetails;
+}
+
 /**
  * A single task to be executed by a Worker Agent
  */
@@ -36,6 +96,9 @@ export interface Task {
   completedAt?: Date;
   result?: Record<string, unknown>;
   error?: string;
+  feedback?: TaskFeedback;
+  plannerTriggerError?: string;
+  plannerTriggerErrorAt?: Date;
 }
 
 /**

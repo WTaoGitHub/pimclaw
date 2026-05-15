@@ -1,0 +1,136 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: pimclaw
+  namespace: baota-playground
+  labels:
+    app: pimclaw
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: pimclaw
+  template:
+    metadata:
+      labels:
+        app: pimclaw
+      annotations:
+        heimdallr.harmonycloud.cn/ipv4hdpools-eth0: '["default-ippool"]'
+        v1.multus-cni.io/default-network: default/calico-heim
+    spec:
+      securityContext:
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+      volumes:
+        - name: pimclaw-persistence
+          persistentVolumeClaim:
+            claimName: pimclaw-pvc-test-1
+        - name: pimclaw-secret
+          secret:
+            secretName: pimclaw-secret
+      initContainers:
+        - name: init-pimclaw-persistence
+          image: 10.1.112.238:8443/baota/pimclaw-openclaw:latest-test
+          imagePullPolicy: Always
+          securityContext:
+            runAsUser: 0
+            runAsGroup: 0
+          resources:
+            requests:
+              cpu: 250m
+              memory: 256Mi
+            limits:
+              cpu: '1'
+              memory: 1Gi
+          command:
+            - sh
+            - -e
+            - -c
+            - |
+              mkdir -p /mnt/openclaw-home && \
+              if [ ! -f /mnt/openclaw-home/.seeded ]; then \
+                echo "[init] First boot: seeding openclaw-home (workspaces only)"; \
+                mkdir -p /mnt/openclaw-home/cron \
+                         /mnt/openclaw-home/skills \
+                         /mnt/openclaw-home/workspaces/pimclaw-main \
+                         /mnt/openclaw-home/workspaces/pimclaw-head \
+                         /mnt/openclaw-home/workspaces/pimclaw-planner; \
+                cp /app/seed-openclaw-home/cron/jobs.json            /mnt/openclaw-home/cron/jobs.json; \
+                touch /mnt/openclaw-home/.seeded; \
+              else \
+                echo "[init] Existing state found (.seeded present), skipping seed to preserve runtime state"; \
+              fi && \
+              mkdir -p /mnt/openclaw-home/workspaces/pimclaw-main \
+                       /mnt/openclaw-home/skills \
+                       /mnt/openclaw-home/workspaces/pimclaw-head \
+                       /mnt/openclaw-home/workspaces/pimclaw-planner && \
+              cp /app/seed-openclaw-home/workspaces/pimclaw-main/AGENTS.md    /mnt/openclaw-home/workspaces/pimclaw-main/AGENTS.md && \
+              cp /app/seed-openclaw-home/workspaces/pimclaw-head/AGENTS.md    /mnt/openclaw-home/workspaces/pimclaw-head/AGENTS.md && \
+              rm -rf /mnt/openclaw-home/skills/pimclaw-runtime-metrics-chart && \
+              cp -R /app/seed-openclaw-home/skills/pimclaw-runtime-metrics-chart /mnt/openclaw-home/skills/pimclaw-runtime-metrics-chart && \
+              cp /app/seed-openclaw-home/workspaces/pimclaw-planner/AGENTS.md /mnt/openclaw-home/workspaces/pimclaw-planner/AGENTS.md && \
+              mkdir -p /mnt/openclaw-home/state && \
+              chown -R 1000:1000 /mnt/openclaw-home
+          volumeMounts:
+            - name: pimclaw-persistence
+              mountPath: /mnt/openclaw-home
+      containers:
+        - name: pimclaw
+          image: 10.1.112.238:8443/baota/pimclaw-openclaw:latest-test
+          imagePullPolicy: Always
+          command:
+            - openclaw
+            - gateway
+            - --bind
+            - lan
+            - --port
+            - "18789"
+          ports:
+            - containerPort: 18789
+              protocol: TCP
+          livenessProbe:
+            tcpSocket:
+              port: 18789
+            initialDelaySeconds: 5 # Reduced because startupProbe handles the boot
+            timeoutSeconds: 3      # Increased to tolerate brief network/CPU spikes
+            periodSeconds: 30
+            successThreshold: 1
+            failureThreshold: 5    # Increased: allows 2.5 minutes of failure before a kill
+          readinessProbe:
+            tcpSocket:
+              port: 18789
+            timeoutSeconds: 3      # Increased tolerance for slow responses
+            periodSeconds: 10      # Increased: gives the service more breathing room
+            successThreshold: 1
+            failureThreshold: 6    # Increased: allows 1 minute of "unready" before removal from LB
+          startupProbe:
+            tcpSocket:
+              port: 18789
+            timeoutSeconds: 3
+            periodSeconds: 10
+            successThreshold: 1
+            failureThreshold: 30
+          resources:
+            limits:
+              cpu: '6'
+              memory: 8Gi
+            requests:
+              cpu: '4'
+              memory: 4Gi
+          volumeMounts:
+            - name: pimclaw-persistence
+              mountPath: /home/node/.openclaw
+            - name: pimclaw-secret
+              mountPath: /home/node/.openclaw/openclaw.json
+              subPath: openclaw.json
+          terminationMessagePath: /dev/termination-log
+          terminationMessagePolicy: File
+      restartPolicy: Always
+      terminationGracePeriodSeconds: 30
+      dnsPolicy: ClusterFirst
+      schedulerName: default-scheduler
+  strategy:
+    type: Recreate
+  revisionHistoryLimit: 10
+  progressDeadlineSeconds: 600

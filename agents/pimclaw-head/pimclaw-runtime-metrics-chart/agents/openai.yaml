@@ -1,0 +1,3 @@
+interface:
+  display_name: "PimClaw Runtime Metrics Chart"
+  short_description: "Chart PimClaw Prometheus or fake-prometheus runtime metrics"

@@ -26,9 +26,11 @@ describe('AnomalyReceiver', () => {
     taskRecorder = new TaskStatusRecorder(tmpDir);
     await taskRecorder.initialize();
 
-    triggerSpy = vi.fn().mockResolvedValue(undefined);
+    triggerSpy = vi.fn().mockImplementation(async () => {
+      await new Promise(() => {});
+    });
     const mockApi = { triggerAgent: triggerSpy };
-    plannerTrigger = new PlannerTrigger(mockApi);
+    plannerTrigger = new PlannerTrigger(mockApi, taskRecorder);
 
     receiver = new AnomalyReceiver(taskRecorder, plannerTrigger);
   });
@@ -152,8 +154,29 @@ describe('AnomalyReceiver', () => {
     const validated = await receiver.receive(events);
     expect(validated).toHaveLength(3);
 
+    // Events are grouped by deployment: 2 events for deploy-1, 1 for deploy-2
+    // → 2 planning tasks, not 3
     const counts = taskRecorder.getTaskCounts();
-    expect(counts.planning).toBe(3);
+    expect(counts.planning).toBe(2);
+
+    // All deploy-1 events share one taskId; deploy-2 has its own
+    const taskIdDeploy1 = validated.find((e) => e.deploymentName === 'deploy-1')!.taskId;
+    const taskIdDeploy2 = validated.find((e) => e.deploymentName === 'deploy-2')!.taskId;
+    expect(taskIdDeploy1).toBeDefined();
+    expect(taskIdDeploy2).toBeDefined();
+    expect(taskIdDeploy1).not.toBe(taskIdDeploy2);
+
+    // Both deploy-1 events have the same taskId
+    const deploy1Events = validated.filter((e) => e.deploymentName === 'deploy-1');
+    expect(deploy1Events).toHaveLength(2);
+    expect(deploy1Events[0].taskId).toBe(deploy1Events[1].taskId);
+
+    // Task data contains all events for each deployment
+    const taskDeploy1 = taskRecorder.getTask(taskIdDeploy1)!;
+    expect((taskDeploy1.taskData as any).events).toHaveLength(2);
+
+    const taskDeploy2 = taskRecorder.getTask(taskIdDeploy2)!;
+    expect((taskDeploy2.taskData as any).events).toHaveLength(1);
   });
 
   it('should set task priority based on severity', async () => {

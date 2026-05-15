@@ -5,10 +5,12 @@
 
 import { BaseAgent } from './base-agent.js';
 import { ComponentRegistry } from './component-registry.js';
+import { PlannerMemoryStore } from './planner-memory-store.js';
 import { TaskStatusRecorder } from './task-status-recorder.js';
 import { WorkerAgent } from './worker-agent.js';
-import { TaskExecutor } from './task-executor.js';
+import type { TaskRunner } from './task-executor.js';
 import { Task } from '../types/index.js';
+import type { PluginLogger } from 'openclaw/plugin-sdk/plugin-entry';
 
 /**
  * Scheduler Agent
@@ -24,13 +26,17 @@ export class SchedulerAgent extends BaseAgent {
   private workers: Map<string, WorkerAgent> = new Map();
   private pollingIntervalMs: number = 5000; // poll every 5 seconds
   private isRunning: boolean = false;
-  private taskExecutor: TaskExecutor | null = null;
+  private taskExecutor: TaskRunner | null = null;
+  private readonly plannerMemoryStore: PlannerMemoryStore | null;
+  private readonly logger: PluginLogger | null;
 
   constructor(
     registry: ComponentRegistry,
     taskRecorder: TaskStatusRecorder,
     maxWorkers?: number,
-    taskExecutor?: TaskExecutor,
+    taskExecutor?: TaskRunner,
+    plannerMemoryStore?: PlannerMemoryStore,
+    logger?: PluginLogger,
   ) {
     super('scheduler', registry, {
       agentId: 'scheduler-1',
@@ -41,6 +47,18 @@ export class SchedulerAgent extends BaseAgent {
       this.maxConcurrentWorkers = maxWorkers;
     }
     this.taskExecutor = taskExecutor ?? null;
+    this.plannerMemoryStore = plannerMemoryStore ?? null;
+    this.logger = logger ?? null;
+  }
+
+  private debug(message: string, context?: Record<string, unknown>): void {
+    if (context) {
+      this.logger?.debug(`[Scheduler] ${message}`, context);
+      if (!this.logger) console.debug(`[Scheduler] ${message}`, context);
+      return;
+    }
+    this.logger?.debug(`[Scheduler] ${message}`);
+    if (!this.logger) console.debug(`[Scheduler] ${message}`);
   }
 
   /**
@@ -48,6 +66,7 @@ export class SchedulerAgent extends BaseAgent {
    */
   async run(): Promise<void> {
     this.isRunning = true;
+    this.debug('starting polling loop', { pollingIntervalMs: this.pollingIntervalMs, maxWorkers: this.maxConcurrentWorkers });
     this.updateAction('Starting polling loop');
 
     while (this.isRunning && this.status === 'Listening' && !this.aborted) {
@@ -77,6 +96,7 @@ export class SchedulerAgent extends BaseAgent {
       this.maxConcurrentWorkers - this.workers.size;
 
     if (availableSlots <= 0) {
+      this.debug('at capacity', { activeWorkers: this.workers.size, maxWorkers: this.maxConcurrentWorkers });
       this.updateAction(
         `At capacity: ${this.workers.size}/${this.maxConcurrentWorkers} workers active`
       );
@@ -87,6 +107,14 @@ export class SchedulerAgent extends BaseAgent {
     const readyTasks = this.taskRecorder
       .getTasksByStatus('ready')
       .slice(0, availableSlots);
+
+    if (readyTasks.length > 0) {
+      this.debug('found ready tasks', {
+        count: readyTasks.length,
+        taskIds: readyTasks.map(t => t.taskId),
+        availableSlots,
+      });
+    }
 
     for (const task of readyTasks) {
       await this.scheduleTask(task);
@@ -106,10 +134,12 @@ export class SchedulerAgent extends BaseAgent {
   private async scheduleTask(task: Task): Promise<void> {
     try {
       // Check if task has expired while waiting
+      const readyAgeMs = new Date().getTime() - new Date(task.statusModifiedAt).getTime();
       if (
         task.status === 'ready' &&
-        new Date().getTime() - new Date(task.createdAt).getTime() > 60000
+        readyAgeMs > 60000
       ) {
+        this.debug('task expired while waiting', { taskId: task.taskId, ageMs: readyAgeMs });
         await this.taskRecorder.updateTaskStatus(task.taskId, 'expired');
         return;
       }
@@ -119,7 +149,14 @@ export class SchedulerAgent extends BaseAgent {
       this.updateAction(`Scheduling task ${task.taskId}`);
 
       // Create and track a Worker Agent
-      const worker = new WorkerAgent(this.registry, this.taskRecorder, task, this.taskExecutor ?? undefined);
+      const worker = new WorkerAgent(
+        this.registry,
+        this.taskRecorder,
+        task,
+        this.taskExecutor ?? undefined,
+        this.plannerMemoryStore ?? undefined,
+        this.logger ?? undefined,
+      );
       this.workers.set(task.taskId, worker);
 
       // Initialize worker (registers in registry, attempts MCP connections)
@@ -133,7 +170,7 @@ export class SchedulerAgent extends BaseAgent {
         this.workers.delete(task.taskId);
       });
 
-      console.log(`[Scheduler] Scheduled task ${task.taskId}`);
+      this.debug('scheduled task', { taskId: task.taskId, activeWorkers: this.workers.size });
     } catch (error) {
       this.registry.recordError(
         this.agentId,
@@ -153,6 +190,7 @@ export class SchedulerAgent extends BaseAgent {
    * Mark a task as completed (called by Worker)
    */
   async taskCompleted(taskId: string, result: Record<string, unknown>): Promise<void> {
+    this.debug('task completed', { taskId });
     this.workers.delete(taskId);
     await this.taskRecorder.updateTaskResult(taskId, result, null);
     const tasksRescheduled =
@@ -167,9 +205,11 @@ export class SchedulerAgent extends BaseAgent {
     this.workers.delete(taskId);
     const task = this.taskRecorder.getTask(taskId);
     if (task && task.retryCount < task.maxRetries) {
+      this.debug('task failed, retrying', { taskId, retryCount: task.retryCount, maxRetries: task.maxRetries });
       // Retry: reset to ready
       await this.taskRecorder.resetTaskForRetry(taskId);
     } else {
+      this.debug('task failed, giving up', { taskId, retryCount: task?.retryCount, maxRetries: task?.maxRetries });
       // Give up: mark as failed
       await this.taskRecorder.updateTaskResult(taskId, null, error);
     }
@@ -179,6 +219,7 @@ export class SchedulerAgent extends BaseAgent {
    * Stop the scheduler and abort all child workers
    */
   async shutdown(): Promise<void> {
+    this.debug('shutting down', { activeWorkers: this.workers.size });
     this.isRunning = false;
 
     // Abort all child workers before shutting down

@@ -20,7 +20,11 @@ export interface TaskExecutionResult {
   error?: string;
 }
 
-export class TaskExecutor {
+export interface TaskRunner {
+  execute(task: Task): Promise<TaskExecutionResult>;
+}
+
+export class TaskExecutor implements TaskRunner {
   private engineClient: EngineMcpClient;
   private serviceIdCache: Map<string, string> = new Map();
 

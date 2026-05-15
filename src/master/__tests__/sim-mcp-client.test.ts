@@ -97,7 +97,7 @@ describe('SimMcpClient', () => {
 
   it('parseToolResult handles non-JSON text content', async () => {
     mockCallTool.mockResolvedValueOnce(
-      mcpTextResult('Server started successfully on port 8001'),
+      mcpTextResult('Server started successfully on port 8723'),
     );
 
     const result = await client.callTool('start_simulation_server', {
@@ -106,7 +106,7 @@ describe('SimMcpClient', () => {
       database_path: '/tmp/db',
     });
 
-    expect(result).toEqual({ text: 'Server started successfully on port 8001' });
+    expect(result).toEqual({ text: 'Server started successfully on port 8723' });
   });
 
   it('callTool defaults args to empty object', async () => {

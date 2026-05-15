@@ -21,7 +21,32 @@
           "timeoutSeconds": { "type": "number", "default": 600 },
           "workspaceDir": { "type": "string", "default": ".pimclaw-agents/planner" },
           "fallbackTaskType": { "type": "string", "default": "scale-up" },
-          "fallbackConfig": { "type": "object" }
+          "fallbackConfig": { "type": "object" },
+          "delivery": {
+            "type": "object",
+            "description": "Optional delivery target for planner key-point summaries.",
+            "properties": {
+              "enabled": { "type": "boolean", "default": false },
+              "channel": { "type": "string", "default": "feishu" },
+              "account": { "type": "string", "description": "OpenClaw reply account id, for example planner-bot." },
+              "target": { "type": "string", "description": "OpenClaw reply target, for example channel:oc_xxx." }
+            }
+          }
+        }
+      },
+      "headFeedback": {
+        "type": "object",
+        "properties": {
+          "settlingDelayMs": {
+            "type": "number",
+            "default": 900000,
+            "description": "Minimum delay after task completion before Head follow-up feedback becomes eligible."
+          },
+          "feedbackValidityMs": {
+            "type": "number",
+            "default": 3600000,
+            "description": "Maximum age after task completion for Head follow-up feedback to remain valid."
+          }
         }
       },
       "prometheus": {
@@ -44,6 +69,15 @@
         },
         "required": ["baseUrl"]
       },
+      "fakePrometheusRemediation": {
+        "type": "object",
+        "description": "Test-only worker executor that posts remediation actions to a fake Prometheus server.",
+        "properties": {
+          "baseUrl": { "type": "string", "description": "Base URL of the fake Prometheus server, for example http://127.0.0.1:9090" },
+          "timeoutMs": { "type": "number", "default": 10000 }
+        },
+        "required": ["baseUrl"]
+      },
       "engineMcp": {
         "type": "object",
         "properties": {
@@ -60,7 +94,7 @@
         "properties": {
           "pythonPath": { "type": "string", "default": "python3.12", "description": "Path to Python interpreter" },
           "serverScriptPath": { "type": "string", "description": "Absolute path to perfllm_mcp_server.py" },
-          "env": { "type": "object", "additionalProperties": { "type": "string" }, "description": "Extra env vars for the Python process" }
+          "env": { "type": "object", "additionalProperties": { "type": "string" }, "description": "Extra env vars for the Python process, for example PERF_DB_HOST=host.docker.internal and PERF_DB_PORT=34567 when the DB is only reachable from the host" }
         },
         "required": ["serverScriptPath"]
       },
@@ -76,6 +110,7 @@
   "contracts": {
     "tools": [
       "pimclaw_submit_anomalies",
+      "pimclaw_submit_task_feedback",
       "pimclaw_plan_task",
       "pimclaw_route_task",
       "pimclaw_list_components",

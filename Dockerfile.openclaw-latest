@@ -1,0 +1,51 @@
+FROM node:24-bookworm AS pimclaw-builder
+
+WORKDIR /build/pimclaw
+
+COPY package.json package-lock.json tsconfig.json ./
+COPY index.ts openclaw.plugin.json AGENTS.md ./
+COPY src ./src
+COPY types ./types
+COPY agents ./agents
+COPY docs/perfMCP ./docs/perfMCP
+
+RUN npm ci \
+    && npm run build \
+    && npm prune --omit=dev
+
+# Install Python deps for Perf MCP — wheels pre-downloaded to avoid apt-get
+COPY cicd/wheels /build/wheels
+RUN python3 -c 'import zipfile, os, glob; os.makedirs("/build/python-deps", exist_ok=True); [zipfile.ZipFile(w).extractall("/build/python-deps") for w in glob.glob("/build/wheels/*.whl")]; print("Python deps:", len(os.listdir("/build/python-deps")), "entries")'
+
+FROM alpine/openclaw:latest
+
+USER root
+
+RUN mkdir -p /app/plugins/pimclaw \
+    /app/data/pimclaw/docs/perfMCP \
+    /app/seed-openclaw-home/cron \
+    /app/seed-openclaw-home/skills \
+    /app/seed-openclaw-home/workspaces/pimclaw-main \
+    /app/seed-openclaw-home/workspaces/pimclaw-head \
+    /app/seed-openclaw-home/workspaces/pimclaw-planner
+
+COPY --from=pimclaw-builder /build/pimclaw/package.json /app/plugins/pimclaw/package.json
+COPY --from=pimclaw-builder /build/pimclaw/package-lock.json /app/plugins/pimclaw/package-lock.json
+COPY --from=pimclaw-builder /build/pimclaw/index.ts /app/plugins/pimclaw/index.ts
+COPY --from=pimclaw-builder /build/pimclaw/openclaw.plugin.json /app/plugins/pimclaw/openclaw.plugin.json
+COPY --from=pimclaw-builder /build/pimclaw/dist /app/plugins/pimclaw/dist
+COPY --from=pimclaw-builder /build/pimclaw/node_modules /app/plugins/pimclaw/node_modules
+COPY --from=pimclaw-builder /build/pimclaw/agents/pimclaw-main/AGENTS.md /app/seed-openclaw-home/workspaces/pimclaw-main/AGENTS.md
+COPY --from=pimclaw-builder /build/pimclaw/agents/pimclaw-head/AGENTS.md /app/seed-openclaw-home/workspaces/pimclaw-head/AGENTS.md
+COPY --from=pimclaw-builder /build/pimclaw/agents/pimclaw-head/pimclaw-runtime-metrics-chart /app/seed-openclaw-home/skills/pimclaw-runtime-metrics-chart
+COPY --from=pimclaw-builder /build/pimclaw/agents/pimclaw-planner/AGENTS.md /app/seed-openclaw-home/workspaces/pimclaw-planner/AGENTS.md
+COPY --from=pimclaw-builder /build/pimclaw/docs/perfMCP/perfllm_mcp_server.py /app/data/pimclaw/docs/perfMCP/perfllm_mcp_server.py
+
+# Python deps for Perf MCP server (built in builder stage, copied here)
+COPY --from=pimclaw-builder /build/python-deps /app/python-deps
+ENV PYTHONPATH=/app/python-deps
+
+RUN ln -s /app /app/plugins/pimclaw/node_modules/openclaw \
+    && chown -R node:node /app/plugins/pimclaw /app/seed-openclaw-home /app/data/pimclaw /app/python-deps
+
+USER node

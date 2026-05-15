@@ -258,12 +258,7 @@ export class PimClawMCPServer {
 
   private async listTasks(args: any): Promise<unknown> {
     const limit = args.limit || 10;
-    if (args.status) {
-      return this.taskRecorder
-        .getTasksByStatus(args.status)
-        .slice(0, limit);
-    }
-    return this.taskRecorder.getAllTasks().slice(0, limit);
+    return this.taskRecorder.getRecentTasks(limit, args.status);
   }
 
   private async taskDetails(args: any): Promise<unknown> {

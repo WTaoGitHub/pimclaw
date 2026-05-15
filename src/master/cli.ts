@@ -57,10 +57,7 @@ function setupCommands(): void {
     .description('List tasks')
     .action(async (options) => {
       const limit = parseInt(options.limit);
-      const tasks = options.status
-        ? taskRecorder.getTasksByStatus(options.status)
-        : taskRecorder.getAllTasks();
-      console.log(JSON.stringify(tasks.slice(0, limit), null, 2));
+      console.log(JSON.stringify(taskRecorder.getRecentTasks(limit, options.status), null, 2));
     });
 
   program

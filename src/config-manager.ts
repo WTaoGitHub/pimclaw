@@ -32,6 +32,10 @@ export interface PimClawConfig {
     password?: string;
     bearerToken?: string;
   };
+  fakePrometheusRemediation?: {
+    baseUrl: string;
+    timeoutMs?: number;
+  };
   storage?: {
     path?: string;
     type?: 'file' | 'database';
