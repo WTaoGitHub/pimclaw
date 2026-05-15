@@ -6,7 +6,7 @@
   "gateway": {
     "auth": {
       "mode": "token",
-      "token": "baota123"
+      "token": "${OPENCLAW_GATEWAY_TOKEN}"
     },
     "controlUi": {
       "allowedOrigins": [
@@ -110,7 +110,7 @@
     "mode": "merge",
     "providers": {
       "minimax": {
-        "baseUrl": "https://api.minimaxi.com/anthropic",
+        "baseUrl": "${SERVICE_URL}",
         "models": [
           {
             "id": "MiniMax-M2.7",
@@ -134,7 +134,7 @@
         "authHeader": true
       },
       "deepseek": {
-        "baseUrl": "https://api.deepseek.com",
+        "baseUrl": "${SERVICE_URL}",
         "api": "openai-completions",
         "models": [
           {
@@ -261,15 +261,15 @@
       "accounts": {
         "main-bot": {
           "appId": "cli_a931da88bbf99bc9",
-          "appSecret": "WT5IWuV7CeiLndzovJRuMc4tgeoeecTX"
+          "appSecret": "${FEISHU_APP_SECRET}"
         },
         "head-bot": {
           "appId": "cli_a9434c31e8fa9bb5",
-          "appSecret": "7a6V7LZ0i141rMRJi7a8ucHJbWKNDRdf"
+          "appSecret": "${FEISHU_APP_SECRET}"
         },
         "planner-bot": {
           "appId": "cli_a96f3e6c50389bc2",
-          "appSecret": "hrOhKJkCv1646MnSmGYltIAf4FwHA7rn"
+          "appSecret": "${FEISHU_APP_SECRET}"
         },
         "default": {
           "groupPolicy": "open"
@@ -312,7 +312,7 @@
         "enabled": true,
         "config": {
           "webSearch": {
-            "apiKey": "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"
+            "apiKey": "${API_KEY}"
           }
         }
       },
@@ -320,27 +320,27 @@
         "enabled": true,
         "config": {
           "prometheus": {
-            "baseUrl": "http://fake-prometheus.baota-playground.svc.cluster.local:9090"
+            "baseUrl": "${SERVICE_URL}"
           },
           "fakePrometheusRemediation": {
-            "baseUrl": "http://fake-prometheus.baota-playground.svc.cluster.local:9090",
+            "baseUrl": "${SERVICE_URL}",
             "timeoutMs": 10000
           },
           "perfMcp": {
             "env": {
-              "PERF_DB_HOST": "10.1.112.239",
+              "PERF_DB_HOST": "${SERVICE_HOST}",
               "PERF_DB_PORT": "34567"
             },
             "pythonPath": "python3",
             "serverScriptPath": "/app/data/pimclaw/docs/perfMCP/perfllm_mcp_server.py"
           },
           "simMcp": {
-            "sseUrl": "http://192.168.4.26:8721/sse"
+            "sseUrl": "${SERVICE_URL}"
           },
           "engineMcp": {
-            "sseUrl": "http://<engine-mcp-host>:<port>/sse",
-            "username": "<platform-username>",
-            "password": "<platform-password>",
+            "sseUrl": "${SERVICE_URL}",
+            "username": "${REDACTED}",
+            "password": "${PASSWORD}",
             "tenantId": "<optional-tenant-id>",
             "tokenRefreshMarginMs": 300000
           }

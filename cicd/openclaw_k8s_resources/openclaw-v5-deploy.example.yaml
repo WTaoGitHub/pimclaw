@@ -19,7 +19,7 @@ spec:
     spec:
       initContainers:
         - name: init-openclaw-config
-          image: 10.1.112.238:8443/baota/alpine:3.23.3
+          image: ${IMAGE_REGISTRY}/baota/alpine:3.23.3
           securityContext:
             runAsUser: 0
           command:
@@ -210,50 +210,6 @@ spec:
                     }
                   }
                 },
-                "channels": {
-                  "feishu": {
-                    "enabled": true,
-                    "connectionMode": "websocket",
-                    "domain": "feishu",
-                    "accounts": {
-                      "main-bot": {
-                        "appId": "cli_a931da88bbf99bc9",
-                        "appSecret": "9UMtx6R2aHNtoQ7XESMFmeqGkm4WG6rx"
-                      },
-                      "head-bot": {
-                        "appId": "cli_a9434c31e8fa9bb5",
-                        "appSecret": "XEPmAr46uBfrBdcnsskFObbkguFo8ufL"
-                      },
-                      "planner-bot": {
-                        "appId": "cli_a96f3e6c50389bc2",
-                        "appSecret": "EGYUdGN43IbPQCe2ptUJhfbNUqkwDjON"
-                      }
-                    }
-                  }
-                },
-                "bindings": [
-                  {
-                    "agentId": "pimclaw-main",
-                    "match": {
-                      "channel": "feishu",
-                      "accountId": "main-bot"
-                    }
-                  },
-                  {
-                    "agentId": "pimclaw-head",
-                    "match": {
-                      "channel": "feishu",
-                      "accountId": "head-bot"
-                    }
-                  },
-                  {
-                    "agentId": "pimclaw-planner",
-                    "match": {
-                      "channel": "feishu",
-                      "accountId": "planner-bot"
-                    }
-                  }
-                ],
                 "plugins": {
                   "entries": {
                     "minimax": {
@@ -271,18 +227,18 @@ spec:
                       "enabled": true,
                       "config": {
                         "prometheus": {
-                          "baseUrl": "http://10.109.9.57:9090"
+                          "baseUrl": "${SERVICE_URL}.57:9090"
                         },
                         "perfMcp": {
                           "env": {
-                            "PERF_DB_HOST": "10.1.112.239",
+                            "PERF_DB_HOST": "${SERVICE_HOST}.239",
                             "PERF_DB_PORT": "34567"
                           },
                           "pythonPath": "python3",
                           "serverScriptPath": "/home/node/.openclaw/pimclaw/docs/perfMCP/perfllm_mcp_server.py"
                         },
                         "simMcp": {
-                          "sseUrl": "http://192.168.4.26:8721/sse"
+                          "sseUrl": "${SERVICE_URL}/sse"
                         }
                       }
                     }
@@ -316,7 +272,7 @@ spec:
 
       containers:
         - name: pimclaw
-          image: 10.1.112.238:8443/baota/openclaw:2026.4.26
+          image: ${IMAGE_REGISTRY}/baota/openclaw:2026.4.26
           imagePullPolicy: IfNotPresent
           command:
             - openclaw
