@@ -163,6 +163,9 @@ func TestActionSwitchesToNormalMode(t *testing.T) {
 	if len(status.AnomalyMetrics) < 1 || len(status.AnomalyMetrics) > 2 {
 		t.Fatalf("expected one or two anomaly metrics, got %v", status.AnomalyMetrics)
 	}
+	if status.AnomalyMetrics[0] != "ttft" {
+		t.Fatalf("expected ttft as first anomaly metric, got %v", status.AnomalyMetrics)
+	}
 
 	postJSON(t, ts.URL+"/_fake/action", `{"action":"restart","deploymentName":"minimax-m25-tp8ep"}`)
 	status = getStatus(t, ts.URL)
@@ -293,6 +296,9 @@ func TestModeAPI(t *testing.T) {
 	}
 	if len(status.AnomalyMetrics) < 1 || len(status.AnomalyMetrics) > 2 {
 		t.Fatalf("expected one or two anomaly metrics, got %v", status.AnomalyMetrics)
+	}
+	if status.AnomalyMetrics[0] != "ttft" {
+		t.Fatalf("expected ttft as first anomaly metric, got %v", status.AnomalyMetrics)
 	}
 	abnormalCount := 0
 	for _, metric := range []string{"ttft", "tpot", "throughput", "gpu_utilization", "error_rate"} {

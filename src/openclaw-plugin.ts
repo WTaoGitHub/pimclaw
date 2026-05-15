@@ -861,7 +861,7 @@ function createCliPlannerAgentApi(ctx: OpenClawPluginServiceContext): OpenClawAg
             ? [
                 '--deliver',
                 '--reply-channel', options.delivery.channel,
-                ...(options.delivery.account ? ['--account', options.delivery.account] : []),
+                ...(options.delivery.account ? ['--reply-account', options.delivery.account] : []),
                 ...(options.delivery.target ? ['--reply-to', options.delivery.target] : []),
               ]
             : []),
@@ -1159,6 +1159,7 @@ function createPimClawService(): OpenClawPluginService {
         ? {
             enabled: true,
             channel: plannerConfig.delivery.channel ?? 'feishu',
+            account: plannerConfig.delivery.account,
             target: plannerConfig.delivery.target,
           }
         : undefined;
@@ -1428,7 +1429,11 @@ function buildPimClawTools() {
         },
         suppressAutoSubmit: {
           type: 'boolean',
-          description: 'When true, skip runtime guardrail auto-submission. Use in scout/chart-only queries to avoid creating anomaly tasks.',
+          description: 'Deprecated compatibility flag. Runtime guardrail auto-submission is disabled unless autoSubmitAnomalies is explicitly true.',
+        },
+        autoSubmitAnomalies: {
+          type: 'boolean',
+          description: 'When true, runtime guardrail anomaly hints are automatically submitted as anomaly tasks. Leave unset for scout/chart-only queries.',
         },
       },
     },
@@ -1581,7 +1586,7 @@ function buildPimClawTools() {
 
       if (runtimeAnomalyHints.length > 0 && anomalyReceiver) {
         try {
-          if (!params.suppressAutoSubmit) {
+          if (params.autoSubmitAnomalies === true && params.suppressAutoSubmit !== true) {
             const actionableEvents = runtimeAnomalyHints
               .filter((hint) => hint.actionRequired === 'submit_anomaly')
               .map((hint) => ({

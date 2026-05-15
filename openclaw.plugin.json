@@ -28,6 +28,7 @@
             "properties": {
               "enabled": { "type": "boolean", "default": false },
               "channel": { "type": "string", "default": "feishu" },
+              "account": { "type": "string", "description": "OpenClaw reply account id, for example planner-bot." },
               "target": { "type": "string", "description": "OpenClaw reply target, for example channel:oc_xxx." }
             }
           }

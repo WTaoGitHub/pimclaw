@@ -357,8 +357,15 @@ func (s *metricsStore) pickAnomalyMetricsLocked() []string {
 	bucket := int64(s.virtualNow) + s.seed
 	r := seededRand("anomaly-metric-selection", bucket)
 	count := 1 + r.Intn(2)
-	available := append([]string(nil), anomalyMetricKeys...)
-	selected := make([]string, 0, count)
+	// Always include ttft as the first anomaly metric. Pick the
+	// remaining count-1 randomly from the other anomaly metric keys.
+	selected := []string{"ttft"}
+	available := make([]string, 0, len(anomalyMetricKeys)-1)
+	for _, k := range anomalyMetricKeys {
+		if k != "ttft" {
+			available = append(available, k)
+		}
+	}
 	for len(selected) < count && len(available) > 0 {
 		idx := r.Intn(len(available))
 		selected = append(selected, available[idx])

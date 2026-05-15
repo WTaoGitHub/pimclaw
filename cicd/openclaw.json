@@ -351,7 +351,7 @@
               "enabled": true,
               "channel": "feishu",
               "account": "planner-bot",
-              "target": "channel:oc_f305d0c3cf623806cd3f15a6a03dd636"
+              "target": "channel:oc_6e00d5309875a21836df3b52d09edaa4"
             }
           },
           "engineMcp": {

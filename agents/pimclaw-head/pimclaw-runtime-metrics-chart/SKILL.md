@@ -1,6 +1,6 @@
 ---
 name: pimclaw-runtime-metrics-chart
-description: Query PimClaw runtime Prometheus or fake-prometheus metrics and render human-friendly charts. Use when working in this PimClaw repo and asked to inspect, visualize, chart, plot, or compare runtime LLM deployment metrics such as TTFT, TPOT, QPS, throughput, GPU utilization, or error rate from Prometheus, fake-prometheus, or the same in-cluster path used by pimclaw_query_metrics. Also use when the user explicitly says Chinese scouting/status phrases such as "前去打探", "敌军动向", or "最新情况"; in PimClaw Head context these mean inspect current runtime metrics and report/chart the latest situation.
+description: Query PimClaw runtime Prometheus or fake-prometheus metrics and render human-friendly charts. Use when working in this PimClaw repo and asked to inspect, visualize, chart, plot, or compare runtime LLM deployment metrics such as TTFT, TPOT, QPS, throughput, GPU utilization, or error rate from Prometheus, fake-prometheus, or the same in-cluster path used by pimclaw_query_metrics. Also use when the user explicitly says Chinese scouting/status phrases such as "前去打探", "敌军动向", "最新情况", or "当前状态"; in PimClaw Head context these mean inspect current runtime metrics and report/chart the latest situation.
 ---
 
 # PimClaw Runtime Metrics Chart
@@ -14,6 +14,7 @@ Treat these explicit user phrases as requests to invoke this skill:
 - `前去打探`
 - `敌军动向`
 - `最新情况`
+- `当前状态`
 
 In PimClaw Head context, interpret them as: query configured fake/runtime Prometheus, render the runtime metrics chart, and summarize the latest LLM deployment situation.
 
@@ -27,8 +28,9 @@ In PimClaw Head context, interpret them as: query configured fake/runtime Promet
 6. Use `--deployment` when the user wants one deployment. Omit it for aggregated metrics or fake Prometheus defaults.
 7. The script also fetches `gpu_info` when supported by the configured Prometheus source and prints it as `gpu_info` JSON. Use this to report deployment name, model name, and `hardware_name`.
 8. The query range is at least 10 minutes with 15-second samples, so each metric line has at least 40 points. Do not request shorter ranges for scout/latest-situation reports.
-9. Always pass `suppressAutoSubmit: true` to `pimclaw_query_metrics` in scout/chart-only mode so runtime guardrails do not auto-create anomaly tasks.
-10. Return the generated PNG with Markdown image syntax if available. If PNG conversion is not available, return the SVG path.
+9. In scout/chart-only mode, use the script output as the metrics source. Do not call `pimclaw_query_metrics` after the script just to summarize the chart.
+10. If a direct `pimclaw_query_metrics` call is unavoidable, pass `suppressAutoSubmit: true` and never pass `autoSubmitAnomalies: true`, so runtime guardrails do not create anomaly tasks.
+11. Return the generated PNG with Markdown image syntax if available. If PNG conversion is not available, return the SVG path.
 
 Example:
 
