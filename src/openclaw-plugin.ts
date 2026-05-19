@@ -30,7 +30,7 @@ import { SchedulerAgent } from './master/scheduler-agent.js';
 import { AnomalyReceiver } from './master/anomaly-receiver.js';
 import type { AnomalyEvent } from './master/anomaly-receiver.js';
 import { PlannerTrigger } from './master/planner-trigger.js';
-import type { OpenClawAgentApi } from './master/planner-trigger.js';
+import type { OpenClawAgentApi, PlannerDeliveryConfig } from './master/planner-trigger.js';
 import { FileLogger } from './master/file-logger.js';
 import {
   PrometheusClient,
@@ -857,6 +857,14 @@ function createCliPlannerAgentApi(ctx: OpenClawPluginServiceContext): OpenClawAg
           '--session-id', uuidv4(),
           '--message', plannerInstruction,
           '--timeout', String(options.runTimeoutSeconds),
+          ...(options.delivery?.enabled
+            ? [
+                '--deliver',
+                '--reply-channel', options.delivery.channel,
+                ...(options.delivery.account ? ['--reply-account', options.delivery.account] : []),
+                ...(options.delivery.target ? ['--reply-to', options.delivery.target] : []),
+              ]
+            : []),
           '--json',
         ],
         {
@@ -1147,6 +1155,14 @@ function createPimClawService(): OpenClawPluginService {
       // 2. PlannerTrigger — spawns Planner agent via OpenClaw API
       plannerFallbackTaskType = plannerConfig.fallbackTaskType ?? 'scale-up';
       plannerFallbackConfig = plannerConfig.fallbackConfig ?? { replicaDelta: 1 };
+      const plannerDeliveryConfig: PlannerDeliveryConfig | undefined = plannerConfig.delivery?.enabled
+        ? {
+            enabled: true,
+            channel: plannerConfig.delivery.channel ?? 'feishu',
+            account: plannerConfig.delivery.account,
+            target: plannerConfig.delivery.target,
+          }
+        : undefined;
       const plannerAgentApi = selectPlannerAgentApi(
         (ctx as any).openclawApi,
         () => createCliPlannerAgentApi(ctx),
@@ -1160,6 +1176,7 @@ function createPimClawService(): OpenClawPluginService {
         agentId: plannerConfig.agentId ?? 'pimclaw-planner',
         timeoutSeconds: plannerConfig.timeoutSeconds ?? 600,
         workspaceDir: plannerWorkspaceDir,
+        delivery: plannerDeliveryConfig,
       }, registry, plannerMemoryStore, fileLogger);
 
       ctx.logger.info(
@@ -1410,6 +1427,14 @@ function buildPimClawTools() {
           type: 'number',
           description: 'Return time-series [timestamp, value] pairs over this many minutes (step ~15s). Use 5 to match the Head Agent cron interval.',
         },
+        suppressAutoSubmit: {
+          type: 'boolean',
+          description: 'Deprecated compatibility flag. Runtime guardrail auto-submission is disabled unless autoSubmitAnomalies is explicitly true.',
+        },
+        autoSubmitAnomalies: {
+          type: 'boolean',
+          description: 'When true, runtime guardrail anomaly hints are automatically submitted as anomaly tasks. Leave unset for scout/chart-only queries.',
+        },
       },
     },
     async execute(sessionId: string, params: Record<string, unknown>) {
@@ -1561,30 +1586,32 @@ function buildPimClawTools() {
 
       if (runtimeAnomalyHints.length > 0 && anomalyReceiver) {
         try {
-          const actionableEvents = runtimeAnomalyHints
-            .filter((hint) => hint.actionRequired === 'submit_anomaly')
-            .map((hint) => ({
-              type: hint.type,
-              metricName: hint.metricName,
-              currentValue: hint.currentValue,
-              previousValue: hint.previousValue,
-              severity: hint.severity,
-              deploymentName: hint.deploymentName,
-              hardwareName: hint.hardwareName,
-              gpuType: hint.gpuType,
-              reasoning: `[runtime guardrail] ${hint.reason}`,
-            }));
-          if (actionableEvents.length > 0) {
-            const validated = await anomalyReceiver.receive(actionableEvents);
-            autoSubmittedAnomalies.push(
-              ...validated.map((event) => ({
-                eventId: event.eventId,
-                taskId: event.taskId,
-                metricName: event.metricName,
-                deploymentName: event.deploymentName,
-                severity: event.severity,
-              })),
-            );
+          if (params.autoSubmitAnomalies === true && params.suppressAutoSubmit !== true) {
+            const actionableEvents = runtimeAnomalyHints
+              .filter((hint) => hint.actionRequired === 'submit_anomaly')
+              .map((hint) => ({
+                type: hint.type,
+                metricName: hint.metricName,
+                currentValue: hint.currentValue,
+                previousValue: hint.previousValue,
+                severity: hint.severity,
+                deploymentName: hint.deploymentName,
+                hardwareName: hint.hardwareName,
+                gpuType: hint.gpuType,
+                reasoning: `[runtime guardrail] ${hint.reason}`,
+              }));
+            if (actionableEvents.length > 0) {
+              const validated = await anomalyReceiver.receive(actionableEvents);
+              autoSubmittedAnomalies.push(
+                ...validated.map((event) => ({
+                  eventId: event.eventId,
+                  taskId: event.taskId,
+                  metricName: event.metricName,
+                  deploymentName: event.deploymentName,
+                  severity: event.severity,
+                })),
+              );
+            }
           }
         } catch (err) {
           autoSubmittedAnomalies.push({

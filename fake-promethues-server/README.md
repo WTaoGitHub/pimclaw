@@ -10,27 +10,77 @@ It implements key Prometheus endpoints used by `pimclaw_query_metrics`:
 - `GET /api/v1/status/config`
 - `GET /_fake/status` (custom debug endpoint)
 - `POST /_fake/action` or `POST /_fake/actions` (custom remediation endpoint)
-- `POST /_fake/recover` or `POST /_fake/recover-anomaly` (custom anomaly recovery endpoint)
+- `POST /_fake/mode` (custom normal/anomaly mode switch endpoint)
 
 The server stores in-memory time-series and continuously generates data every 15s.
-It rotates through a 3-window cycle: `NORMAL-1 -> NORMAL-2 -> ANOMALY`.
+On startup it pre-fills a rolling 24-hour history for all six PimClaw metrics:
+`ttft`, `tpot`, `qps`, `throughput`, `gpu_utilization`, and `error_rate`.
+That is `4 * 60 * 24 = 5760` points per metric. As new samples are generated,
+the oldest samples are dropped.
 
-For PimClaw usage, each new `query_range` cycle (detected by a new `end` timestamp)
-advances one synthetic 5-minute window. This means consecutive
-`pimclaw_query_metrics(rangeMinutes=5)` runs naturally compare as:
-1. `NORMAL-1`
-2. `NORMAL-2`
-3. `ANOMALY`
-4. repeats
+The server starts in `NORMAL` mode and emits stable healthy LLM-serving metrics.
+It switches modes only through explicit control APIs:
 
-Semantics of the first four calls:
-1. First call: baseline 5-minute window (`NORMAL-1`)
-2. Second call: similar baseline-like window (`NORMAL-2`)
-3. Third call: strong change window (`ANOMALY`)
-4. Fourth call: back to baseline-like (`NORMAL-1`)
+```bash
+curl -s -X POST http://127.0.0.1:9090/_fake/mode \
+  -H 'Content-Type: application/json' \
+  -d '{"mode":"normal"}'
 
-Within one metrics collection cycle, multiple metric queries sharing the same `end`
-stay in the same window, so all six metrics are consistent for that cycle.
+curl -s -X POST http://127.0.0.1:9090/_fake/mode \
+  -H 'Content-Type: application/json' \
+  -d '{"mode":"anomaly"}'
+```
+
+Switching mode immediately backfills the most recent five minutes of stored
+data, then the server continues generating one new point every 15 seconds.
+Older history remains in the one-day rolling buffer until it naturally ages out.
+
+Switching to `ANOMALY` mode randomly selects one or two incident metrics from
+`ttft`, `tpot`, `throughput`, `gpu_utilization`, and `error_rate`. Only the
+selected metrics become bad; the other metrics remain healthy context signals.
+The selected keys are returned in `anomaly_metrics` from `/_fake/status` and
+the mode-switch response. Switching back to `NORMAL` clears `anomaly_metrics`
+and backfills the latest five minutes with healthy points.
+
+Metric targets:
+
+| Metric | Normal target | Anomaly target | Very bad reference |
+|--------|---------------|----------------|--------------------|
+| TTFT | `< 200 ms` | `> 10s` | `> 30s` |
+| TPOT | `< 20 ms/token` | `> 500 ms/token` | `> 1,200 ms/token` |
+| QPS | stable load around `12 req/s` | not selected by anomaly mode | near-zero request flow |
+| Throughput | `> 40 tok/sec/user` | `< 1.5 tok/sec/user` | `0 tokens/sec` |
+| GPU Util | `80%-95%` | `< 70%` | `100% locked or 0%` |
+| Error Rate | `< 0.01%` | `> 10%` | `> 25%` |
+
+## LLM Deployment Metadata
+
+The fake server supplies deployment metadata in metric labels, `/_fake/status`,
+and `vllm:gpu_info` query responses so PimClaw can attach runtime hardware
+metadata to anomaly events.
+
+Defaults:
+
+| Field | Default |
+|-------|---------|
+| deployment name | `Qwen/Qwen3-32B` |
+| model name | `Qwen/Qwen3-32B` |
+| hardware_name | `NVIDIA H800_SXM` |
+
+Configure with environment variables:
+
+```bash
+FAKE_DEPLOYMENT_NAME="my-deployment"
+FAKE_MODEL_NAME="Qwen/Qwen3-32B"
+FAKE_HARDWARE_NAME="NVIDIA H800_SXM"
+```
+
+Example GPU metadata query:
+
+```bash
+curl -sG http://127.0.0.1:9090/api/v1/query \
+  --data-urlencode 'query=vllm:gpu_info'
+```
 
 ## Fake Remediation Control
 
@@ -49,36 +99,30 @@ Supported action names:
 - `scale-in` / `scale-down`
 - `scale-out` / `scale-up`
 
-After an action is accepted, the server enters `REMEDIATED-NORMAL` mode. In that
-mode, it keeps returning normal performance metrics and suppresses anomaly
-windows, even when the synthetic cycle reaches its anomaly phase.
-
-To recover the server back to the anomaly model:
-
-```bash
-curl -s -X POST http://127.0.0.1:9090/_fake/recover-anomaly
-```
-
-Recovery immediately positions the synthetic clock in the `ANOMALY` phase so the
-next `pimclaw_query_metrics(rangeMinutes=5)` call sees abnormal LLM performance
-metrics again.
+After an action is accepted, the server behaves exactly like
+`POST /_fake/mode {"mode":"normal"}`: it enters `NORMAL` mode, clears
+`anomaly_metrics`, backfills the latest five minutes with healthy points, and
+returns normal performance metrics.
 
 ## Local Run
 
 ```bash
 cd fake-promethues-server
-go run . --port 9090 --cycle-minutes 5
+go run . --port 9090
 ```
 
 Environment variable supported for cloud platforms:
 - `PORT` (default: `9090`)
+- `FAKE_DEPLOYMENT_NAME` (default: `Qwen/Qwen3-32B`) sets the Prometheus `model_name` / PimClaw deployment identifier
+- `FAKE_MODEL_NAME` (default: `Qwen/Qwen3-32B`) sets the model label exposed by the fake server
+- `FAKE_HARDWARE_NAME` (default: `NVIDIA H800_SXM`) sets the hardware metadata exposed by `vllm:gpu_info`
 - `FAKE_NORMAL_RANDOMNESS` (default: `0.04`) controls how far normal windows vary around their normal baseline; `0` disables extra normal-window spread
 - `FAKE_ANOMALY_RANDOMNESS` (default: `0.35`) controls how far anomaly cycles vary around their anomaly baseline; `0` disables extra anomaly spread
-- `FAKE_FORCE_ANOMALY_EVERY_QUERY` (default: `false`) alternates each query cycle between very high and very low metric windows so consecutive Head-agent reads diverge sharply and should always trigger anomaly detection
+- `FAKE_FORCE_ANOMALY_EVERY_QUERY` is deprecated; use `POST /_fake/mode`
 
 Flags:
 - `--port`: listen port
-- `--cycle-minutes`: minutes per cycle window (full cycle is 3x)
+- `--cycle-minutes`: deprecated compatibility flag
 
 ## Build and Validate
 
@@ -120,8 +164,9 @@ docker run --rm -p 9090:9090 -e PORT=9090 fake-prometheus:latest
 # Tune normal and anomaly volatility independently
 docker run --rm -p 9090:9090 -e PORT=9090 -e FAKE_NORMAL_RANDOMNESS=0.02 -e FAKE_ANOMALY_RANDOMNESS=0.60 fake-prometheus:latest
 
-# Force every new query cycle to swing hard from the previous one
-docker run --rm -p 9090:9090 -e PORT=9090 -e FAKE_FORCE_ANOMALY_EVERY_QUERY=true fake-prometheus:latest
+# Switch modes at runtime
+curl -s -X POST http://127.0.0.1:9090/_fake/mode -H 'Content-Type: application/json' -d '{"mode":"anomaly"}'
+curl -s -X POST http://127.0.0.1:9090/_fake/mode -H 'Content-Type: application/json' -d '{"mode":"normal"}'
 ```
 
 ## Kubernetes Deployment

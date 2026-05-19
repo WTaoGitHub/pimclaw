@@ -52,9 +52,7 @@ spec:
               if [ ! -f /mnt/openclaw-home/.seeded ]; then \
                 echo "[init] First boot: seeding openclaw-home (workspaces only)"; \
                 mkdir -p /mnt/openclaw-home/cron \
-                         /mnt/openclaw-home/agents/pimclaw-main/agent \
-                         /mnt/openclaw-home/agents/pimclaw-head/agent \
-                         /mnt/openclaw-home/agents/pimclaw-planner/agent \
+                         /mnt/openclaw-home/skills \
                          /mnt/openclaw-home/workspaces/pimclaw-main \
                          /mnt/openclaw-home/workspaces/pimclaw-head \
                          /mnt/openclaw-home/workspaces/pimclaw-planner; \
@@ -64,6 +62,7 @@ spec:
                 echo "[init] Existing state found (.seeded present), skipping seed to preserve runtime state"; \
               fi && \
               mkdir -p /mnt/openclaw-home/workspaces/pimclaw-main \
+                       /mnt/openclaw-home/skills \
                        /mnt/openclaw-home/workspaces/pimclaw-head \
                        /mnt/openclaw-home/workspaces/pimclaw-planner \
                        /mnt/openclaw-home/agents/pimclaw-main/agent \
@@ -71,6 +70,8 @@ spec:
                        /mnt/openclaw-home/agents/pimclaw-planner/agent && \
               cp /app/seed-openclaw-home/workspaces/pimclaw-main/AGENTS.md    /mnt/openclaw-home/workspaces/pimclaw-main/AGENTS.md && \
               cp /app/seed-openclaw-home/workspaces/pimclaw-head/AGENTS.md    /mnt/openclaw-home/workspaces/pimclaw-head/AGENTS.md && \
+              rm -rf /mnt/openclaw-home/skills/pimclaw-runtime-metrics-chart && \
+              cp -R /app/seed-openclaw-home/skills/pimclaw-runtime-metrics-chart /mnt/openclaw-home/skills/pimclaw-runtime-metrics-chart && \
               cp /app/seed-openclaw-home/workspaces/pimclaw-planner/AGENTS.md /mnt/openclaw-home/workspaces/pimclaw-planner/AGENTS.md && \
               cp /mnt/pimclaw-secret/auth-profiles.json /mnt/openclaw-home/agents/pimclaw-main/agent/auth-profiles.json && \
               cp /mnt/pimclaw-secret/auth-profiles.json /mnt/openclaw-home/agents/pimclaw-head/agent/auth-profiles.json && \

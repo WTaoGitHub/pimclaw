@@ -72,10 +72,15 @@
             "pimclaw_submit_anomalies",
             "pimclaw_query_metrics",
             "pimclaw_submit_task_feedback",
-            "pimclaw_list_tasks"
+            "pimclaw_list_tasks",
+            "write",
+            "read",
+            "exec"
           ]
         },
-        "skills": [],
+        "skills": [
+          "pimclaw-runtime-metrics-chart"
+        ],
         "thinkingDefault": "off"
       },
       {
@@ -98,7 +103,8 @@
             "pimclaw_sim_benchmark",
             "pimclaw_sim_dataset_info",
             "web_search",
-            "write"
+            "write",
+            "read"
           ]
         },
         "skills": [],
@@ -303,6 +309,9 @@
       "memory-core": {
         "enabled": false
       },
+      "feishu": {
+        "enabled": true
+      },
       "minimax": {
         "enabled": true
       },
@@ -334,6 +343,14 @@
           },
           "simMcp": {
             "sseUrl": "${SERVICE_URL}"
+          },
+          "planner": {
+            "delivery": {
+              "enabled": true,
+              "channel": "feishu",
+              "account": "planner-bot",
+              "target": "channel:oc_6e00d5309875a21836df3b52d09edaa4"
+            }
           },
           "engineMcp": {
             "sseUrl": "${SERVICE_URL}",
