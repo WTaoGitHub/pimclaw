@@ -215,18 +215,19 @@ spec:
                     "enabled": true,
                     "connectionMode": "websocket",
                     "domain": "feishu",
+                    "defaultAccount": "head-bot",
                     "accounts": {
                       "main-bot": {
                         "appId": "cli_a931da88bbf99bc9",
-                        "appSecret": "9UMtx6R2aHNtoQ7XESMFmeqGkm4WG6rx"
+                        "appSecret": "${FEISHU_APP_SECRET}"
                       },
                       "head-bot": {
                         "appId": "cli_a9434c31e8fa9bb5",
-                        "appSecret": "XEPmAr46uBfrBdcnsskFObbkguFo8ufL"
+                        "appSecret": "${FEISHU_APP_SECRET}"
                       },
                       "planner-bot": {
                         "appId": "cli_a96f3e6c50389bc2",
-                        "appSecret": "EGYUdGN43IbPQCe2ptUJhfbNUqkwDjON"
+                        "appSecret": "${FEISHU_APP_SECRET}"
                       }
                     }
                   }
@@ -263,9 +264,12 @@ spec:
                       "enabled": true,
                       "config": {
                         "webSearch": {
-                          "apiKey": "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"
+                          "apiKey": "${TAVILY_API_KEY}"
                         }
                       }
+                    },
+                    "feishu": {
+                      "enabled": true
                     },
                     "pimclaw": {
                       "enabled": true,

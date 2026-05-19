@@ -270,11 +270,9 @@
         "planner-bot": {
           "appId": "cli_a96f3e6c50389bc2",
           "appSecret": "${FEISHU_APP_SECRET}"
-        },
-        "default": {
-          "groupPolicy": "open"
         }
-      }
+      },
+      "defaultAccount": "head-bot"
     }
   },
   "bindings": [
@@ -345,6 +343,9 @@
             "tokenRefreshMarginMs": 300000
           }
         }
+      },
+      "feishu": {
+        "enabled": true
       }
     },
     "load": {
