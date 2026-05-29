@@ -97,8 +97,9 @@ if ! command -v kubectl >/dev/null 2>&1; then
   echo "ERROR: kubectl not found"
   exit 1
 fi
-if ! command -v docker >/dev/null 2>&1; then
+if ! $SKIP_BUILD && ! command -v docker >/dev/null 2>&1; then
   echo "ERROR: docker not found"
+  echo "Use --skip-build if the image already exists in the registry."
   exit 1
 fi
 

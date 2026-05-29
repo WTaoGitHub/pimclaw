@@ -5,6 +5,8 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 NAMESPACE="baota-playground"
 REGISTRY="10.1.112.238:8443/baota/pimclaw-openclaw"
+OPENCLAW_CONFIG="$REPO_ROOT/cicd/openclaw.json"
+AUTH_PROFILES_CONFIG="$REPO_ROOT/cicd/auth-profiles.json"
 
 # ── Help ────────────────────────────────────────────────────────────────────
 
@@ -14,11 +16,19 @@ Usage: $0 [options] [--tag <name>]
 
 Options:
   --tag <name>  Image tag to use (default: latest-test)
+  --config <path> Path to local openclaw.json secret source
+              (default: cicd/openclaw.json; ignored by git)
+  --auth-profiles <path> Path to local auth-profiles.json secret source
+              (default: cicd/auth-profiles.json; ignored by git)
   --fresh       Delete PVC and start fresh (destroys all runtime state)
   --config-only Only update Secret/ConfigMap and restart (no image build)
   --skip-build  Skip Docker build/push, just redeploy current image
 
 Defaults: build + push + redeploy with tag latest-test, preserve PVC state.
+If cicd/openclaw.json is missing, copy cicd/openclaw.example.json and fill
+real secrets locally before deploying. Do not commit the real config.
+If cicd/auth-profiles.json is missing, copy cicd/auth-profiles.example.json and
+fill real provider keys locally before deploying. Do not commit the real file.
 EOF
   exit 0
 }
@@ -30,6 +40,8 @@ TAG="latest-test"
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --tag)         TAG="$2"; shift 2 ;;
+    --config)      OPENCLAW_CONFIG="$2"; shift 2 ;;
+    --auth-profiles) AUTH_PROFILES_CONFIG="$2"; shift 2 ;;
     --fresh)       FRESH=true; shift ;;
     --config-only) CONFIG_ONLY=true; shift ;;
     --skip-build)  SKIP_BUILD=true; shift ;;
@@ -41,9 +53,11 @@ done
 # ── ConfigMap / Secret sync ──────────────────────────────────────────────────
 
 sync_configs() {
-  echo "=== Syncing Secret (openclaw.json) ==="
+  echo "=== Syncing Secret (openclaw.json from ${OPENCLAW_CONFIG}) ==="
+  echo "=== Syncing Secret (auth-profiles.json from ${AUTH_PROFILES_CONFIG}) ==="
   kubectl create secret generic pimclaw-secret \
-    --from-file=openclaw.json="$REPO_ROOT/cicd/openclaw.json" \
+    --from-file=openclaw.json="$OPENCLAW_CONFIG" \
+    --from-file=auth-profiles.json="$AUTH_PROFILES_CONFIG" \
     -n "$NAMESPACE" \
     --dry-run=client -o yaml | kubectl apply -f - -n "$NAMESPACE"
 }
@@ -73,12 +87,49 @@ fresh_pvc() {
 # ── Validate config JSON ─────────────────────────────────────────────────────
 
 validate_json() {
-  if ! python3 -m json.tool "$REPO_ROOT/cicd/openclaw.json" > /dev/null 2>&1; then
-    echo "ERROR: Invalid JSON: $REPO_ROOT/cicd/openclaw.json"
-    python3 -m json.tool "$REPO_ROOT/cicd/openclaw.json" 2>&1 || true
+  validate_json_file "OpenClaw config" "$OPENCLAW_CONFIG" "$REPO_ROOT/cicd/openclaw.example.json"
+  validate_json_file "auth profiles" "$AUTH_PROFILES_CONFIG" "$REPO_ROOT/cicd/auth-profiles.example.json"
+  echo "=== Secret source JSON valid ==="
+}
+
+validate_json_file() {
+  local label="$1"
+  local file="$2"
+  local example="$3"
+
+  if [[ ! -f "$file" ]]; then
+    cat >&2 <<EOF
+ERROR: Missing local ${label}: $file
+
+The real file is intentionally ignored by git to avoid leaking secrets.
+Create it from the sanitized template, then fill real values locally:
+
+  cp "$example" "$file"
+
+You can also pass a different local config with:
+
+  $0 --config /path/to/openclaw.json --auth-profiles /path/to/auth-profiles.json
+EOF
     exit 1
   fi
-  echo "=== Config JSON valid ==="
+
+  if [[ "$file" == *".example.json" ]]; then
+    echo "ERROR: Refusing to deploy sanitized example file: $file" >&2
+    echo "Copy it to a local ignored file and replace placeholders first." >&2
+    exit 1
+  fi
+
+  if grep -q '\${[A-Za-z0-9_][A-Za-z0-9_]*}' "$file"; then
+    echo "ERROR: File still contains placeholder values: $file" >&2
+    echo "Replace all \${...} placeholders with real local values before deploying." >&2
+    exit 1
+  fi
+
+  if ! python3 -m json.tool "$file" > /dev/null 2>&1; then
+    echo "ERROR: Invalid JSON: $file"
+    python3 -m json.tool "$file" 2>&1 || true
+    exit 1
+  fi
 }
 
 # ── Main ─────────────────────────────────────────────────────────────────────

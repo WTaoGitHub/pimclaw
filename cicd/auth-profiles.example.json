@@ -1,0 +1,20 @@
+{
+  "version": 1,
+  "profiles": {
+    "minimax:cn": {
+      "type": "api_key",
+      "provider": "minimax",
+      "key": "${MINIMAX_API_KEY}"
+    },
+    "nvidia:default": {
+      "type": "api_key",
+      "provider": "nvidia",
+      "key": "${NVIDIA_API_KEY}"
+    },
+    "deepseek:default": {
+      "type": "api_key",
+      "provider": "deepseek",
+      "key": "${DEEPSEEK_API_KEY}"
+    }
+  }
+}

@@ -3,3 +3,28 @@ dist/
 *.tgz
 .claude/
 .tmp/
+
+# Secrets and local runtime config
+.env
+.env.*
+!.env.example
+*.local
+*.secret.*
+*secrets*
+*credentials*
+*auth-profiles.json
+openclaw.json
+cicd/openclaw.json
+cicd/auth-profiles.json
+
+# Kubernetes/private deploy material
+*kubeconfig*
+*.kubeconfig
+cicd/openclaw_k8s_resources/*deploy*.yaml
+!cicd/openclaw_k8s_resources/*deploy*.example.yaml
+
+# Logs/runtime output
+*.log
+fake-promethues-server/server.log
+fake-promethues-server/.regression-promql.log
+
